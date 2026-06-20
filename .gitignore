@@ -20,3 +20,41 @@ benchmarks/v021-mode-system/__pycache__/
 test01-Wesnoth/
 test02-antennapod/
 test_placeholder_fix.py
+
+# Internal planning / non-public development notes
+
+docs/roadmap*.md
+docs/*roadmap*.md
+docs/v*-iteration-plan.md
+docs/*iteration-plan*.md
+docs/*verification*.md
+docs/grill-decisions.md
+docs/*decision*.md
+docs/test-*.md
+docs/*test*.md
+
+# Internal notes and private planning folders
+
+notes/
+private/
+internal/
+planning/
+.local-notes/
+
+# Generated benchmark reports and local run outputs
+
+benchmarks/**/work/
+benchmarks/**/runs/
+benchmarks/**/report.json
+benchmarks/**/report.md
+benchmarks/**/__pycache__/
+
+# Local agent / experiment scratch files
+
+test01-*/
+test02-*/
+test03-*/
+test_*.py
+*.tmp
+*.bak
+*.local
