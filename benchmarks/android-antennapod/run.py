@@ -17,6 +17,7 @@ sys.path.insert(0, str(REPOSITORY))
 from runtime.localize_anything.android_strings_adapter import extract_segments, stage_rebuild, validate_pair  # noqa: E402
 from runtime.localize_anything.dashboard import build_delivery_dashboard, render_dashboard_markdown  # noqa: E402
 from runtime.localize_anything.delivery import package_delivery  # noqa: E402
+from runtime.localize_anything.delivery_decision import create_delivery_decision_report, render_delivery_decision_markdown  # noqa: E402
 from runtime.localize_anything.generation import collect_generated_handoff, create_draft_request, create_generation_handoff, validate_generated_segments  # noqa: E402
 from runtime.localize_anything.io_utils import read_jsonl, write_json, write_jsonl  # noqa: E402
 from runtime.localize_anything.planning import create_batch_plan  # noqa: E402
@@ -143,6 +144,9 @@ def run_benchmark(
     dashboard = build_delivery_dashboard(delivery_dir)
     write_json(evidence_dir / "delivery-dashboard.json", dashboard)
     (evidence_dir / "delivery-dashboard.md").write_text(render_dashboard_markdown(dashboard), encoding="utf-8", newline="\n")
+    decision = create_delivery_decision_report(delivery_dir, source_root)
+    write_json(evidence_dir / "delivery-decision.json", decision)
+    (evidence_dir / "delivery-decision.md").write_text(render_delivery_decision_markdown(decision), encoding="utf-8", newline="\n")
 
     summary = {
         "benchmark_id": CONFIG["id"],
@@ -160,6 +164,9 @@ def run_benchmark(
         "delivery_directory": delivery_dir.as_posix(),
         "dashboard_json": (evidence_dir / "delivery-dashboard.json").as_posix(),
         "dashboard_markdown": (evidence_dir / "delivery-dashboard.md").as_posix(),
+        "delivery_decision_status": decision["status"],
+        "delivery_decision_json": (evidence_dir / "delivery-decision.json").as_posix(),
+        "delivery_decision_markdown": (evidence_dir / "delivery-decision.md").as_posix(),
         "handoff_manifest": (evidence_dir / "generation-handoff.json").as_posix(),
         "generation_collect": (evidence_dir / "generation-collect.json").as_posix(),
     }

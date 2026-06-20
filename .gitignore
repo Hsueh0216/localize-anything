@@ -15,4 +15,8 @@ benchmarks/ios-signal/work/
 benchmarks/ios-signal/runs/
 benchmarks/ios-icecubes-xcstrings/work/
 benchmarks/ios-icecubes-xcstrings/runs/
+benchmarks/v021-mode-system/work/
+benchmarks/v021-mode-system/__pycache__/
 test01-Wesnoth/
+test02-antennapod/
+test_placeholder_fix.py

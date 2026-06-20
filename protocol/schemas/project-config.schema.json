@@ -3,7 +3,7 @@
   "$id": "https://localize-anything.dev/schemas/project-config.schema.json",
   "title": "Localize Anything Project Configuration",
   "type": "object",
-  "required": ["protocol_version", "source_locale", "source_files", "target_locales"],
+  "required": ["protocol_version", "source_locale", "source_files", "target_locales", "operating_mode", "reference_policy"],
   "properties": {
     "protocol_version": { "const": "0.1" },
     "source_locale": { "type": "string", "minLength": 1 },
@@ -18,6 +18,12 @@
       "minItems": 1,
       "uniqueItems": true,
       "items": { "type": "string", "minLength": 1 }
+    },
+    "operating_mode": {
+      "enum": ["blind_benchmark", "greenfield_localization", "existing_locale_maintenance", "rewrite_or_harmonization"]
+    },
+    "reference_policy": {
+      "enum": ["blind", "style_only", "tm_assisted", "preserve_existing"]
     },
     "delivery_mode": { "enum": ["bundle", "apply"] },
     "preflight_mode": { "enum": ["auto", "full", "layered", "light", "skip_deep"] },

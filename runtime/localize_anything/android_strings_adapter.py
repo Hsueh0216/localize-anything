@@ -19,7 +19,12 @@ def extract_segments(path: Path, source_locale: str, source_path: str | None = N
     return [_segment(logical_path, source_locale, resource) for resource in document["resources"]]
 
 
-def rebuild(source_path: Path, translated_segments: list[dict[str, Any]], output: Path) -> None:
+def rebuild(
+    source_path: Path,
+    translated_segments: list[dict[str, Any]],
+    output: Path,
+    preserve_target_only_from: Path | None = None,
+) -> dict[str, Any]:
     document = _read_document(source_path)
     by_key = _targets_by_resource_key(translated_segments)
     lines = ['<?xml version="1.0" encoding="utf-8"?>', "<resources>"]
@@ -56,9 +61,17 @@ def rebuild(source_path: Path, translated_segments: list[dict[str, Any]], output
             lines.append(f"    <{resource_type} {_format_attributes(attrs)}>")
             lines.extend(rendered_items)
             lines.append(f"    </{resource_type}>")
+    preserved_target_only = _target_only_resources(resources, preserve_target_only_from)
+    if preserved_target_only:
+        lines.append("    <!-- Target-only resources preserved for owner review. -->")
+        lines.extend(_render_existing_resources(preserved_target_only))
     lines.append("</resources>")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return {
+        "preserved_target_only_count": len(preserved_target_only),
+        "preserved_target_only_keys": [resource["key"] for resource in preserved_target_only],
+    }
 
 
 def stage_rebuild(
@@ -67,10 +80,12 @@ def stage_rebuild(
     staging_dir: Path,
     target_locale: str,
     project_root: Path | None = None,
+    preserve_target_only: bool = False,
 ) -> dict[str, Any]:
     relative = target_resource_path(source_path, target_locale, project_root)
     output = staging_dir / relative
-    rebuild(source_path, translated_segments, output)
+    existing_target = project_root / relative if preserve_target_only and project_root is not None else None
+    rebuild_result = rebuild(source_path, translated_segments, output, existing_target)
     return {
         "protocol_version": PROTOCOL_VERSION,
         "adapter": "core.android-strings",
@@ -79,6 +94,7 @@ def stage_rebuild(
         "output": output.as_posix(),
         "destination": relative.as_posix(),
         "written": True,
+        **rebuild_result,
     }
 
 
@@ -291,6 +307,46 @@ def _targets_by_resource_key(segments: list[dict[str, Any]]) -> dict[str, dict[s
         if isinstance(key, str):
             result[key] = segment
     return result
+
+
+def _target_only_resources(source_resources: list[dict[str, Any]], target_path: Path | None) -> list[dict[str, Any]]:
+    if target_path is None or not target_path.is_file():
+        return []
+    source_keys = {resource["key"] for resource in source_resources}
+    target = _read_document(target_path)
+    return [resource for resource in target["resources"] if resource["key"] not in source_keys]
+
+
+def _render_existing_resources(resources: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    index = 0
+    while index < len(resources):
+        resource = resources[index]
+        resource_type = resource["type"]
+        if resource_type == "string":
+            attrs = _target_attributes(resource["attributes"])
+            attrs["name"] = resource["name"]
+            lines.append(f"    <string {_format_attributes(attrs)}>{escape(str(resource['value']))}</string>")
+            index += 1
+            continue
+
+        grouped = []
+        while index < len(resources) and resources[index]["type"] == resource_type and resources[index]["name"] == resource["name"]:
+            grouped.append(resources[index])
+            index += 1
+        rendered_items = []
+        for item in grouped:
+            if resource_type == "plurals":
+                rendered_items.append(f"        <item quantity={quoteattr(item['quantity'])}>{escape(str(item['value']))}</item>")
+            else:
+                rendered_items.append(f"        <item>{escape(str(item['value']))}</item>")
+        if rendered_items:
+            attrs = _target_attributes(resource["attributes"])
+            attrs["name"] = resource["name"]
+            lines.append(f"    <{resource_type} {_format_attributes(attrs)}>")
+            lines.extend(rendered_items)
+            lines.append(f"    </{resource_type}>")
+    return lines
 
 
 def _resource(

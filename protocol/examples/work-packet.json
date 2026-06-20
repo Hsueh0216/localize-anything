@@ -4,6 +4,14 @@
   "batch_id": "batch-0001",
   "source_locale": "en-US",
   "target_locale": "zh-CN",
+  "operating_mode": "greenfield_localization",
+  "reference_policy": "style_only",
+  "mode_contract": {
+    "operating_mode": "greenfield_localization",
+    "reference_policy": "style_only",
+    "target_reference_visibility": "approved terminology and style guidance only",
+    "generation_scope": "generate drafts for all selected source segments"
+  },
   "segments": [
     {
       "protocol_version": "0.1",

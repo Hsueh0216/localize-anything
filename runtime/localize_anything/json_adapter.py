@@ -14,6 +14,7 @@ from . import PROTOCOL_VERSION
 PLACEHOLDER_RE = re.compile(
     r"{{[^{}]+}}"
     r"|{[A-Za-z_][^{}]*}"
+    r"|%%"  # literal %% — consume first, never treat as placeholder
     r"|%\d+\$[#0 +\-]*\d*(?:\.\d+)?(?:hh|h|ll|l|L|z|j|t)?[A-Za-z@]"
     r"|%\([^)]+\)[#0 +\-]*\d*(?:\.\d+)?(?:hh|h|ll|l|L|z|j|t)?[A-Za-z@]"
     r"|%[#0 +\-]*\d*(?:\.\d+)?(?:hh|h|ll|l|L|z|j|t)?[A-Za-z@]"
@@ -38,7 +39,7 @@ def source_hash(text: str) -> str:
 
 
 def extract_placeholders(text: str) -> list[str]:
-    return sorted(set(PLACEHOLDER_RE.findall(text)))
+    return sorted(set(p for p in PLACEHOLDER_RE.findall(text) if p != "%%"))
 
 
 def escape_pointer_part(part: str) -> str:

@@ -2,25 +2,35 @@ from __future__ import annotations
 
 import json
 import gettext
+import http.client
+import importlib.util
 import io
+import shutil
 import tempfile
+import threading
 import unittest
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from runtime.localize_anything.acceptance import create_acceptance
+from runtime.localize_anything.agent import run_agent
+from runtime.localize_anything.android_app_test import run_android_app_test
 from runtime.localize_anything.android_strings_adapter import extract_segments as extract_android_segments
 from runtime.localize_anything.android_strings_adapter import rebuild as rebuild_android_strings
 from runtime.localize_anything.android_strings_adapter import stage_rebuild as stage_android_strings
 from runtime.localize_anything.android_strings_adapter import target_resource_path, validate_pair as validate_android_strings
 from runtime.localize_anything.apply import create_apply_plan, execute_apply, render_apply_plan_markdown
+from runtime.localize_anything.cli import main as cli_main
 from runtime.localize_anything.contracts import validate_adapter_tree
 from runtime.localize_anything.dashboard import build_delivery_dashboard, render_dashboard_markdown
 from runtime.localize_anything.delivery import package_delivery
+from runtime.localize_anything.delivery_decision import create_delivery_decision_report, render_delivery_decision_markdown
 from runtime.localize_anything.generation import (
     collect_generated_handoff,
     create_draft_request,
     create_generation_handoff,
+    create_retry_handoff,
     import_generated_handoff,
     import_generated_response,
     render_draft_prompt,
@@ -29,7 +39,7 @@ from runtime.localize_anything.generation import (
 )
 from runtime.localize_anything.gettext_adapter import extract_segments as extract_po_segments
 from runtime.localize_anything.gettext_adapter import parse_po, rebuild as rebuild_po, validate_pair as validate_po_pair
-from runtime.localize_anything.io_utils import read_jsonl, write_json, write_jsonl
+from runtime.localize_anything.io_utils import read_json, read_jsonl, write_json, write_jsonl
 from runtime.localize_anything.ios_strings_adapter import extract_segments as extract_ios_segments
 from runtime.localize_anything.ios_strings_adapter import rebuild as rebuild_ios_strings
 from runtime.localize_anything.ios_strings_adapter import stage_rebuild as stage_ios_strings
@@ -40,7 +50,9 @@ from runtime.localize_anything.markup_adapter import extract_segments as extract
 from runtime.localize_anything.markup_adapter import rebuild as rebuild_markup, validate_pair as validate_markup_pair
 from runtime.localize_anything.mo_compiler import compile_segments_to_mo
 from runtime.localize_anything.planning import create_batch_plan
-from runtime.localize_anything.project import initialize_project, inspect_project
+from runtime.localize_anything.project import initialize_project, inspect_project, load_session_index
+from runtime.localize_anything.provider import generate_handoff_with_http_provider
+from runtime.localize_anything.reflection import create_llm_review_request, import_llm_review_response, render_llm_review_prompt
 from runtime.localize_anything.retrieval import build_work_packet
 from runtime.localize_anything.review import import_review
 from runtime.localize_anything.review_sheet import write_review_sheet
@@ -54,6 +66,7 @@ from runtime.localize_anything.subtitle_adapter import extract_segments as extra
 from runtime.localize_anything.subtitle_adapter import rebuild as rebuild_subtitles, validate_pair as validate_subtitle_pair
 from runtime.localize_anything.tabular_adapter import extract_segments as extract_tabular_segments
 from runtime.localize_anything.tabular_adapter import rebuild as rebuild_tabular, validate_pair as validate_tabular_pair
+from runtime.localize_anything.ui import create_ui_server
 from runtime.localize_anything.wesnoth_adapter import extract_segments as extract_wesnoth_segments
 from runtime.localize_anything.wesnoth_adapter import enrich_segments, inventory as wesnoth_inventory, validate_source
 from runtime.localize_anything.xcstrings_adapter import extract_segments as extract_xcstrings_segments
@@ -394,6 +407,35 @@ class AndroidStringsAdapterTests(unittest.TestCase):
             self.assertTrue(staged_path.is_file())
             self.assertEqual(validate_android_strings(source, staged_path)["status"], "pass")
 
+    def test_android_staging_preserves_target_only_resources_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            shutil.copytree(ANDROID_FIXTURE_ROOT, project)
+            source = project / "app" / "src" / "main" / "res" / "values" / "strings.xml"
+            target = project / "app" / "src" / "main" / "res" / "values-zh-rCN" / "strings.xml"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="legacy_removed_key">旧版专属译文_不得自动删除</string>
+</resources>
+""",
+                encoding="utf-8",
+            )
+            segments = extract_android_segments(source, "en-US", "app/src/main/res/values/strings.xml")
+            for segment in segments:
+                segment["target_locale"] = "zh-CN"
+                segment["target"] = segment["source"]
+                segment["status"] = "generated"
+
+            stage_android_strings(source, segments, root / "staging", "zh-CN", project, preserve_target_only=True)
+            staged = root / "staging" / "app" / "src" / "main" / "res" / "values-zh-rCN" / "strings.xml"
+            text = staged.read_text(encoding="utf-8")
+            self.assertIn('name="legacy_removed_key"', text)
+            self.assertIn("旧版专属译文_不得自动删除", text)
+            self.assertEqual(validate_android_strings(source, staged)["status"], "pass_with_warnings")
+
     def test_placeholder_mismatch_fails_android_strings(self) -> None:
         source = ANDROID_FIXTURE_ROOT / "app" / "src" / "main" / "res" / "values" / "strings.xml"
         segments = extract_android_segments(source, "en-US", "app/src/main/res/values/strings.xml")
@@ -405,6 +447,298 @@ class AndroidStringsAdapterTests(unittest.TestCase):
             result = validate_android_strings(source, output)
             self.assertEqual(result["status"], "fail")
             self.assertTrue(any(item["category"] == "placeholder_parity" for item in result["items"]))
+
+
+class AndroidAppE2ETests(unittest.TestCase):
+    def test_android_app_test_applies_to_copy_and_preserves_source_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "android-project"
+            shutil.copytree(ANDROID_FIXTURE_ROOT, project)
+            source_file = "app/src/main/res/values/strings.xml"
+            original_source = (project / source_file).read_text(encoding="utf-8")
+            original_target = project / "app/src/main/res/values-zh-rCN/strings.xml"
+            self.assertFalse(original_target.exists())
+
+            report = run_android_app_test(
+                project,
+                None,
+                "zh-CN",
+                output_root=root / "out",
+                run_id="android-e2e-001",
+                max_segments=3,
+            )
+
+            assert_protocol_schema(self, "android-app-test-report", report)
+            self.assertEqual(report["status"], "pass")
+            self.assertFalse(report["source_preservation"]["original_project_mutated"])
+            self.assertEqual(report["android"]["source_files"], [source_file])
+            self.assertEqual(report["summary"]["localized_file_count"], 1)
+            self.assertFalse(report["summary"]["real_generation_required"])
+            self.assertFalse(report["summary"]["real_generation_satisfied"])
+            self.assertEqual((project / source_file).read_text(encoding="utf-8"), original_source)
+            self.assertFalse(original_target.exists())
+            app_copy = Path(report["artifacts"]["app_copy"])
+            copied_target = app_copy / report["android"]["target_file"]
+            self.assertTrue(copied_target.is_file())
+            self.assertEqual(report["summary"]["post_apply_qa_status"], "pass")
+            self.assertEqual(report["summary"]["delivery_decision_status"], "owner_review_required")
+            self.assertEqual(read_json(Path(report["artifacts"]["post_apply_plan"]))["summary"]["unchanged"], 1)
+            self.assertTrue(Path(report["artifacts"]["android_app_test_report"]).is_file())
+
+    def test_android_app_test_rejects_output_inside_source_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "android-project"
+            shutil.copytree(ANDROID_FIXTURE_ROOT, project)
+
+            with self.assertRaisesRegex(ValueError, "outside the source project root"):
+                run_android_app_test(
+                    project,
+                    "app/src/main/res/values/strings.xml",
+                    "zh-CN",
+                    output_root=project / "localize-anything-output",
+                    run_id="unsafe",
+                )
+
+    def test_android_app_test_rejects_multiple_generation_inputs_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "android-project"
+            shutil.copytree(ANDROID_FIXTURE_ROOT, project)
+            output_root = root / "out"
+
+            with self.assertRaisesRegex(ValueError, "Use only one Android app test generation input"):
+                run_android_app_test(
+                    project,
+                    None,
+                    "zh-CN",
+                    output_root=output_root,
+                    run_id="invalid-generation-inputs",
+                    generated_dir=root / "generated-batches",
+                    generated=root / "generated.jsonl",
+                )
+            self.assertFalse((output_root / "invalid-generation-inputs").exists())
+
+    def test_android_app_test_requires_real_generation_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "android-project"
+            shutil.copytree(ANDROID_FIXTURE_ROOT, project)
+            output_root = root / "out"
+
+            with self.assertRaisesRegex(ValueError, "requires generated_dir, generated, or local_chinese_draft"):
+                run_android_app_test(
+                    project,
+                    None,
+                    "zh-CN",
+                    output_root=output_root,
+                    run_id="requires-real-generation",
+                    require_real_generation=True,
+                )
+            self.assertFalse((output_root / "requires-real-generation").exists())
+
+    def test_android_app_test_accepts_real_generated_chinese_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "android-project"
+            shutil.copytree(ANDROID_FIXTURE_ROOT, project)
+            source_file = "app/src/main/res/values/strings.xml"
+            source = project / source_file
+            generated = extract_android_segments(source, "en-US", source_file)
+            translations = {
+                "Sample App": "示例应用",
+                "Welcome, %1$s!": "欢迎，%1$s！",
+                "You have %d coins.": "你有 %d 枚金币。",
+                "Battery at 100%": "电量 100%",
+                "Home": "首页",
+                "Settings": "设置",
+                "%d message": "%d 条消息",
+                "%d messages": "%d 条消息",
+            }
+            for segment in generated:
+                segment["target_locale"] = "zh-CN"
+                segment["target"] = translations[segment["source"]]
+                segment["status"] = "generated"
+                segment["generation"] = {
+                    "provider": "codex",
+                    "quality_claim": "fixture_human_readable_chinese_draft",
+                    "purpose": "android_app_e2e_test",
+                }
+            generated_path = root / "codex-generated.jsonl"
+            write_jsonl(generated_path, generated)
+
+            report = run_android_app_test(
+                project,
+                None,
+                "zh-CN",
+                output_root=root / "out",
+                run_id="android-e2e-codex-001",
+                max_segments=3,
+                generated=generated_path,
+                require_real_generation=True,
+            )
+
+            assert_protocol_schema(self, "android-app-test-report", report)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["generation"]["provider"], "codex")
+            self.assertEqual(report["generation"]["quality_claim"], "fixture_human_readable_chinese_draft")
+            self.assertTrue(report["summary"]["real_generation_required"])
+            self.assertTrue(report["summary"]["real_generation_satisfied"])
+            app_copy = Path(report["artifacts"]["app_copy"])
+            target_text = (app_copy / report["android"]["target_file"]).read_text(encoding="utf-8")
+            self.assertIn("示例应用", target_text)
+            self.assertIn("欢迎，%1$s！", target_text)
+            self.assertNotIn("[zh-CN]", target_text)
+
+    def test_android_app_test_cli_accepts_generated_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "android-project"
+            shutil.copytree(ANDROID_FIXTURE_ROOT, project)
+            source_file = "app/src/main/res/values/strings.xml"
+            generated = extract_android_segments(project / source_file, "en-US", source_file)
+            for segment in generated:
+                segment["target_locale"] = "zh-CN"
+                segment["target"] = {
+                    "Sample App": "示例应用",
+                    "Welcome, %1$s!": "欢迎，%1$s！",
+                    "You have %d coins.": "你有 %d 枚金币。",
+                    "Battery at 100%": "电量 100%",
+                    "Home": "首页",
+                    "Settings": "设置",
+                    "%d message": "%d 条消息",
+                    "%d messages": "%d 条消息",
+                }[segment["source"]]
+                segment["status"] = "generated"
+                segment["generation"] = {"provider": "codex", "quality_claim": "cli_fixture_chinese_draft"}
+            generated_path = root / "generated.jsonl"
+            report_path = root / "report.json"
+            write_jsonl(generated_path, generated)
+
+            exit_code = cli_main(
+                [
+                    "android-app-test",
+                    project.as_posix(),
+                    "--target-locale",
+                    "zh-CN",
+                    "--generated",
+                    generated_path.as_posix(),
+                    "--require-real-generation",
+                    "--output-root",
+                    (root / "out").as_posix(),
+                    "--run-id",
+                    "android-e2e-cli-001",
+                    "--max-segments",
+                    "3",
+                    "--output",
+                    report_path.as_posix(),
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            report = read_json(report_path)
+            assert_protocol_schema(self, "android-app-test-report", report)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["generation"]["provider"], "codex")
+            self.assertTrue(report["summary"]["real_generation_satisfied"])
+            target_text = (Path(report["artifacts"]["app_copy"]) / report["android"]["target_file"]).read_text(encoding="utf-8")
+            self.assertIn("设置", target_text)
+
+    def test_generate_chinese_draft_cli_feeds_android_app_test(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "android-project"
+            shutil.copytree(ANDROID_FIXTURE_ROOT, project)
+            source_file = "app/src/main/res/values/strings.xml"
+            segments = extract_android_segments(project / source_file, "en-US", source_file)
+            segments_path = root / "segments.jsonl"
+            generated_path = root / "generated.jsonl"
+            draft_report_path = root / "draft-report.json"
+            write_jsonl(segments_path, segments)
+
+            exit_code = cli_main(
+                [
+                    "generate-chinese-draft",
+                    segments_path.as_posix(),
+                    "--target-locale",
+                    "zh-CN",
+                    "--generated-output",
+                    generated_path.as_posix(),
+                    "--output",
+                    draft_report_path.as_posix(),
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            draft_report = read_json(draft_report_path)
+            self.assertEqual(draft_report["status"], "pass")
+            self.assertEqual(draft_report["provider"], "codex-local")
+            generated = read_jsonl(generated_path)
+            generated_by_source = {segment["source"]: segment for segment in generated}
+            self.assertEqual(generated_by_source["Sample App"]["target"], "\u793a\u4f8b\u5e94\u7528")
+            self.assertEqual(generated_by_source["Welcome, %1$s!"]["target"], "\u6b22\u8fce\uff0c%1$s\uff01")
+            self.assertEqual(generated_by_source["Welcome, %1$s!"]["generation"]["quality_claim"], "local_chinese_draft_for_e2e")
+
+            report = run_android_app_test(
+                project,
+                None,
+                "zh-CN",
+                output_root=root / "out",
+                run_id="android-e2e-local-draft-001",
+                max_segments=3,
+                generated=generated_path,
+                require_real_generation=True,
+            )
+
+            assert_protocol_schema(self, "android-app-test-report", report)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["generation"]["provider"], "codex-local")
+            self.assertEqual(report["generation"]["quality_claim"], "local_chinese_draft_for_e2e")
+            self.assertTrue(report["summary"]["real_generation_satisfied"])
+            target_text = (Path(report["artifacts"]["app_copy"]) / report["android"]["target_file"]).read_text(encoding="utf-8")
+            self.assertIn("\u793a\u4f8b\u5e94\u7528", target_text)
+            self.assertNotIn("[zh-CN]", target_text)
+
+    def test_android_app_test_cli_generates_local_chinese_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "android-project"
+            shutil.copytree(ANDROID_FIXTURE_ROOT, project)
+            report_path = root / "report.json"
+
+            exit_code = cli_main(
+                [
+                    "android-app-test",
+                    project.as_posix(),
+                    "--target-locale",
+                    "zh-CN",
+                    "--local-chinese-draft",
+                    "--require-real-generation",
+                    "--output-root",
+                    (root / "out").as_posix(),
+                    "--run-id",
+                    "android-e2e-local-auto-001",
+                    "--max-segments",
+                    "3",
+                    "--output",
+                    report_path.as_posix(),
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            report = read_json(report_path)
+            assert_protocol_schema(self, "android-app-test-report", report)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["generation"]["provider"], "codex-local")
+            self.assertEqual(report["generation"]["quality_claim"], "local_chinese_draft_for_e2e")
+            self.assertTrue(report["summary"]["real_generation_required"])
+            self.assertTrue(report["summary"]["real_generation_satisfied"])
+            self.assertTrue(Path(report["artifacts"]["local_chinese_draft"]).is_file())
+            self.assertTrue(Path(report["artifacts"]["local_chinese_draft_report"]).is_file())
+            target_text = (Path(report["artifacts"]["app_copy"]) / report["android"]["target_file"]).read_text(encoding="utf-8")
+            self.assertIn("\u793a\u4f8b\u5e94\u7528", target_text)
+            self.assertNotIn("[zh-CN]", target_text)
 
 
 class IOSStringsAdapterTests(unittest.TestCase):
@@ -565,9 +899,40 @@ class ProjectTests(unittest.TestCase):
             config = json.loads((state / "config.json").read_text(encoding="utf-8"))
             assert_protocol_schema(self, "project-config", config)
             assert_protocol_schema(self, "delivery-manifest", manifest)
+            self.assertEqual(config["operating_mode"], "greenfield_localization")
+            self.assertEqual(config["reference_policy"], "style_only")
+            self.assertEqual(manifest["project"]["operating_mode"], "greenfield_localization")
+            self.assertEqual(manifest["project"]["reference_policy"], "style_only")
             self.assertEqual(manifest["source_material"][0]["role"], "source_of_truth")
             self.assertEqual([item["path"] for item in manifest["source_material"]], ["locales/en-US.json"])
             self.assertEqual(manifest["unprocessed_non_text_assets"][0]["asset_type"], "image")
+
+    def test_inspect_ignores_generated_outputs_and_records_routing_evidence(self) -> None:
+        source_file = "app/src/main/res/values/strings.xml"
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "android-project"
+            copied = project / source_file
+            copied.parent.mkdir(parents=True)
+            copied.write_text((ANDROID_FIXTURE_ROOT / source_file).read_text(encoding="utf-8"), encoding="utf-8")
+            (project / "localize-run-002" / "reports").mkdir(parents=True)
+            (project / "localize-run-002" / "reports" / "pm-analysis-report.md").write_text("# Old report\n", encoding="utf-8")
+            (project / "localize-anything-output" / "old").mkdir(parents=True)
+            (project / "localize-anything-output" / "old" / "run-summary.json").write_text("{}", encoding="utf-8")
+            (project / ".localize-anything" / "backups").mkdir(parents=True)
+            (project / ".localize-anything" / "backups" / "old.json").write_text("{}", encoding="utf-8")
+            (project / "build" / "generated").mkdir(parents=True)
+            (project / "build" / "generated" / "strings.json").write_text("{}", encoding="utf-8")
+
+            inspection = inspect_project(project)
+
+            self.assertEqual([item["path"] for item in inspection["supported_files"]], [source_file])
+            self.assertEqual(inspection["adapter_counts"], {"core.android-strings": 1})
+            ignored = {item["path"]: item["reason"] for item in inspection["ignored_paths"]}
+            self.assertEqual(ignored["localize-run-002"], "localize_anything_run_output")
+            self.assertEqual(ignored["localize-anything-output"], "ignored_directory")
+            self.assertEqual(ignored[".localize-anything"], "ignored_directory")
+            self.assertEqual(ignored["build"], "ignored_directory")
+            self.assertIn("localize-run-", inspection["scan_policy"]["ignored_directory_prefixes"])
 
     def test_android_strings_are_detected_as_platform_resources(self) -> None:
         source_file = "app/src/main/res/values/strings.xml"
@@ -619,8 +984,10 @@ class ProjectTests(unittest.TestCase):
     def test_plan_and_retrieve_context_packet(self) -> None:
         source = FIXTURE_ROOT / "locales" / "en-US.json"
         segments = extract_segments(source, "en-US", "locales/en-US.json")
-        plan = create_batch_plan(segments, "en-US", ["zh-CN"])
+        plan = create_batch_plan(segments, "en-US", ["zh-CN"], operating_mode="rewrite_or_harmonization")
         assert_protocol_schema(self, "batch-plan", plan)
+        self.assertEqual(plan["operating_mode"], "rewrite_or_harmonization")
+        self.assertEqual(plan["reference_policy"], "tm_assisted")
         self.assertEqual([batch["content_unit"] for batch in plan["batches"]], ["json:inventory", "json:menu"])
 
         with tempfile.TemporaryDirectory() as directory:
@@ -651,6 +1018,8 @@ class ProjectTests(unittest.TestCase):
             packet = build_work_packet(plan, "batch-0001", segments, state, "zh-CN", limit_tokens=4000)
             assert_protocol_schema(self, "work-packet", packet)
             self.assertEqual(packet["batch_id"], "batch-0001")
+            self.assertEqual(packet["operating_mode"], "rewrite_or_harmonization")
+            self.assertEqual(packet["reference_policy"], "tm_assisted")
             self.assertEqual(packet["memory"]["glossary"][0]["approved_translation"], "重量")
             self.assertEqual(packet["memory"]["translation_memory"][0]["match_kind"], "exact_source")
             self.assertLessEqual(packet["budget"]["estimated_tokens"], packet["budget"]["limit_tokens"])
@@ -733,6 +1102,9 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(fenced_import["status"], "pass", fenced_import["items"])
             self.assertTrue(fenced_import["response_format"].startswith("fenced-1:"))
 
+            bom_import = import_generated_response(packet, "\ufeff" + json.dumps(mapped, ensure_ascii=False), handoff_root / "imported-bom.jsonl")
+            self.assertEqual(bom_import["status"], "pass", bom_import["items"])
+
             response_dir = handoff_root / "responses"
             response_dir.mkdir()
             response_path = response_dir / "batch-0001-response.md"
@@ -750,6 +1122,12 @@ class ProjectTests(unittest.TestCase):
             missing_handoff = import_generated_handoff(handoff, handoff_root / "missing-responses")
             self.assertEqual(missing_handoff["status"], "fail")
             self.assertEqual(missing_handoff["summary"]["blocking_count"], 1)
+            retry = create_retry_handoff(handoff, missing_handoff, handoff_root / "retry-generated")
+            assert_protocol_schema(self, "generation-handoff", retry)
+            self.assertEqual(retry["parent_handoff_id"], handoff["handoff_id"])
+            self.assertEqual(retry["request_count"], 1)
+            self.assertEqual(retry["retry"]["failed_batch_ids"], ["batch-0001"])
+            self.assertEqual(retry["batches"][0]["generated"], (handoff_root / "retry-generated" / "batch-0001.jsonl").as_posix())
 
 
 class LocalizeRunTests(unittest.TestCase):
@@ -820,8 +1198,550 @@ class LocalizeRunTests(unittest.TestCase):
             self.assertTrue(Path(result["artifacts"]["review_sheet_csv"]).is_file())
             self.assertTrue(Path(result["artifacts"]["apply_plan"]).is_file())
             self.assertTrue(Path(result["artifacts"]["apply_plan_markdown"]).is_file())
+            self.assertTrue(Path(result["artifacts"]["delivery_decision"]).is_file())
+            self.assertTrue(Path(result["artifacts"]["delivery_decision_markdown"]).is_file())
+            delivery_decision = read_json(Path(result["artifacts"]["delivery_decision"]))
+            assert_protocol_schema(self, "delivery-decision", delivery_decision)
+            self.assertEqual(delivery_decision["status"], "owner_review_required")
             self.assertIn("Apply Plan", Path(result["artifacts"]["apply_plan_markdown"]).read_text(encoding="utf-8"))
+            self.assertIn(
+                "Delivery Decision Report",
+                Path(result["artifacts"]["delivery_decision_markdown"]).read_text(encoding="utf-8"),
+            )
             self.assertIn("Translation Review Sheet", Path(result["artifacts"]["review_sheet_markdown"]).read_text(encoding="utf-8"))
+
+    def test_blind_benchmark_hides_target_references_from_generation_packets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            _copy_json_fixture_project(project, include_existing_target=True)
+            segments = extract_segments(project / "locales" / "en-US.json", "en-US", "locales/en-US.json")
+            start = next(segment for segment in segments if segment["context"]["json_pointer"] == "/menu/start")
+            state = project / ".localize-anything"
+            state.mkdir(parents=True)
+            (state / "glossary.csv").write_text(
+                "term,source_locale,target_locale,approved_translation,status,scope,part_of_speech,definition,context,do_not_translate,source_provenance,notes\n"
+                "Start,en-US,zh-CN,LEAK_GLOSSARY_TARGET,approved,ui,noun,Test leak,menu,false,test,\n",
+                encoding="utf-8",
+            )
+            write_jsonl(
+                state / "translation-memory.jsonl",
+                [
+                    {
+                        "id": "tm-leak-start",
+                        "identity": "json_pointer:/menu/start",
+                        "segment_id": start["segment_id"],
+                        "source": start["source"],
+                        "source_hash": start["source_hash"],
+                        "target": "LEAK_TM_TARGET",
+                        "source_locale": "en-US",
+                        "target_locale": "zh-CN",
+                        "content_type": "locale_string",
+                        "status": "approved",
+                    }
+                ],
+            )
+
+            result = run_localize(
+                project,
+                "en-US",
+                ["zh-CN"],
+                source_files=["locales/en-US.json"],
+                output_root=root / "out",
+                run_id="blind-001",
+                max_segments=10,
+                handoff_only=True,
+                operating_mode="blind_benchmark",
+            )
+
+            self.assertEqual(result["project"]["operating_mode"], "blind_benchmark")
+            self.assertEqual(result["project"]["reference_policy"], "blind")
+            reference_plan = read_json(Path(result["artifacts"]["reference_plan"]))
+            self.assertTrue(reference_plan["summary"]["blind_reference_hidden"])
+            self.assertGreaterEqual(reference_plan["summary"]["existing_reference_file_count"], 1)
+
+            packet_paths = sorted(Path(result["artifacts"]["work_packets"]).glob("*.json"))
+            self.assertTrue(packet_paths)
+            for packet_path in packet_paths:
+                packet = read_json(packet_path)
+                self.assertEqual(packet["operating_mode"], "blind_benchmark")
+                self.assertEqual(packet["reference_policy"], "blind")
+                self.assertEqual(packet["memory"]["glossary"], [])
+                self.assertEqual(packet["memory"]["translation_memory"], [])
+                packet_text = json.dumps(packet, ensure_ascii=False)
+                self.assertNotIn("LEAK_GLOSSARY_TARGET", packet_text)
+                self.assertNotIn("LEAK_TM_TARGET", packet_text)
+
+                draft_request = read_json(Path(result["artifacts"]["draft_requests"]) / packet_path.name)
+                request_text = json.dumps(draft_request, ensure_ascii=False)
+                self.assertIn("Blind benchmark mode", "\n".join(draft_request["instructions"]))
+                self.assertNotIn("LEAK_GLOSSARY_TARGET", request_text)
+                self.assertNotIn("LEAK_TM_TARGET", request_text)
+
+    def test_existing_locale_maintenance_preserves_reviewed_unchanged_segments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            _copy_json_fixture_project(project, include_existing_target=True)
+            segments = extract_segments(project / "locales" / "en-US.json", "en-US", "locales/en-US.json")
+            start = next(segment for segment in segments if segment["context"]["json_pointer"] == "/menu/start")
+            state = project / ".localize-anything"
+            state.mkdir(parents=True)
+            write_jsonl(
+                state / "translation-memory.jsonl",
+                [
+                    {
+                        "id": "tm-reviewed-start",
+                        "identity": "json_pointer:/menu/start",
+                        "segment_id": start["segment_id"],
+                        "source": start["source"],
+                        "source_hash": start["source_hash"],
+                        "target": "REVIEWED START TARGET",
+                        "source_locale": "en-US",
+                        "target_locale": "zh-CN",
+                        "content_type": "locale_string",
+                        "status": "reviewed",
+                    }
+                ],
+            )
+
+            result = run_localize(
+                project,
+                "en-US",
+                ["zh-CN"],
+                source_files=["locales/en-US.json"],
+                output_root=root / "out",
+                run_id="maintenance-001",
+                max_segments=10,
+                synthetic_draft=True,
+                operating_mode="existing_locale_maintenance",
+            )
+
+            self.assertEqual(result["project"]["operating_mode"], "existing_locale_maintenance")
+            self.assertEqual(result["project"]["reference_policy"], "preserve_existing")
+            reference_plan = read_json(Path(result["artifacts"]["reference_plan"]))
+            self.assertEqual(reference_plan["summary"]["source_segment_count"], len(segments))
+            self.assertEqual(reference_plan["summary"]["preserved_segment_count"], 1)
+            self.assertEqual(reference_plan["summary"]["candidate_segment_count"], len(segments) - 1)
+
+            batch_plan = read_json(Path(result["artifacts"]["batch_plan"]))
+            planned_segment_ids = {
+                segment_id
+                for batch in batch_plan["batches"]
+                for segment_id in batch["segment_ids"]
+            }
+            self.assertNotIn(start["segment_id"], planned_segment_ids)
+
+            for packet_path in sorted(Path(result["artifacts"]["work_packets"]).glob("*.json")):
+                packet = read_json(packet_path)
+                self.assertNotIn(start["segment_id"], [segment["segment_id"] for segment in packet["segments"]])
+                self.assertEqual(packet["reference_policy"], "preserve_existing")
+
+            delivery = Path(result["artifacts"]["delivery_directory"])
+            packaged_target = delivery / "files" / "locales" / "zh-CN.json"
+            target_payload = json.loads(packaged_target.read_text(encoding="utf-8"))
+            self.assertEqual(target_payload["menu"]["start"], "REVIEWED START TARGET")
+            self.assertTrue(target_payload["menu"]["welcome"].startswith("[zh-CN] "))
+
+    def test_existing_locale_maintenance_can_package_when_all_segments_are_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            _copy_json_fixture_project(project, include_existing_target=True)
+            segments = extract_segments(project / "locales" / "en-US.json", "en-US", "locales/en-US.json")
+            state = project / ".localize-anything"
+            state.mkdir(parents=True)
+            write_jsonl(
+                state / "translation-memory.jsonl",
+                [
+                    {
+                        "id": f"tm-reviewed-{index}",
+                        "identity": f"json_pointer:{segment['context']['json_pointer']}",
+                        "segment_id": segment["segment_id"],
+                        "source": segment["source"],
+                        "source_hash": segment["source_hash"],
+                        "target": f"REVIEWED {segment['source']}",
+                        "source_locale": "en-US",
+                        "target_locale": "zh-CN",
+                        "content_type": "locale_string",
+                        "status": "reviewed",
+                    }
+                    for index, segment in enumerate(segments)
+                ],
+            )
+
+            result = run_localize(
+                project,
+                "en-US",
+                ["zh-CN"],
+                source_files=["locales/en-US.json"],
+                output_root=root / "out",
+                run_id="maintenance-all-preserved-001",
+                max_segments=10,
+                synthetic_draft=True,
+                operating_mode="existing_locale_maintenance",
+            )
+
+            self.assertEqual(result["status"], "draft_package_created")
+            self.assertEqual(result["summary"]["candidate_segment_count"], 0)
+            self.assertEqual(result["summary"]["preserved_segment_count"], len(segments))
+            self.assertEqual(result["summary"]["batch_count"], 0)
+            self.assertEqual(list(Path(result["artifacts"]["work_packets"]).glob("*.json")), [])
+            self.assertEqual(read_json(Path(result["artifacts"]["generation_handoff"]))["request_count"], 0)
+            self.assertEqual(read_jsonl(Path(result["artifacts"]["generated_segments"])), [])
+
+            delivery = Path(result["artifacts"]["delivery_directory"])
+            packaged_target = delivery / "files" / "locales" / "zh-CN.json"
+            target_payload = json.loads(packaged_target.read_text(encoding="utf-8"))
+            self.assertEqual(target_payload["menu"]["start"], "REVIEWED Start Game")
+            self.assertEqual(target_payload["menu"]["welcome"], "REVIEWED Welcome, {player}!")
+            self.assertEqual(target_payload["inventory"]["coins"], "REVIEWED You have {{count}} coins.")
+            self.assertEqual(target_payload["inventory"]["weight"], "REVIEWED Weight: %s kg")
+
+
+class AgentRunTests(unittest.TestCase):
+    def test_agent_run_routes_project_and_writes_handoff_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            _copy_json_fixture_project(project)
+
+            result = run_agent(
+                project,
+                "zh-CN",
+                output_root=root / "out",
+                run_id="agent-001",
+                max_segments=2,
+            )
+
+            self.assertEqual(result["status"], "awaiting_llm_responses")
+            self.assertEqual(result["agent"]["architecture"], "routing_parallelization_reflection")
+            self.assertEqual(result["routing"]["adapter_counts"], {"core.json-locale": 2})
+            self.assertEqual(result["routing"]["selected_source_files"], ["locales/en-US.json"])
+            self.assertEqual(result["parallelization"]["batch_count"], result["summary"]["batch_count"])
+            self.assertEqual(result["reflection"]["status"], "pending_llm_output")
+            self.assertIn("scan_policy", result["routing"])
+            self.assertIn("session_index", result["artifacts"])
+            assert_protocol_schema(self, "agent-summary", result)
+            run_dir = Path(result["artifacts"]["run_directory"])
+            self.assertTrue((run_dir / "agent-summary.json").is_file())
+            self.assertTrue((run_dir / "generation-README.md").is_file())
+            self.assertIn("--responses-dir", "\n".join(result["next_actions"]))
+            session_index = load_session_index(project)
+            assert_protocol_schema(self, "project-session", session_index)
+            self.assertEqual(session_index["latest_session_id"], "agent-001")
+            self.assertEqual(session_index["sessions"][-1]["kind"], "agent_run")
+            self.assertEqual(session_index["sessions"][-1]["selected_source_files"], ["locales/en-US.json"])
+
+    def test_agent_run_synthetic_draft_creates_reviewable_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            _copy_json_fixture_project(project, include_existing_target=False)
+
+            result = run_agent(
+                project,
+                "zh-CN",
+                source_files=["locales/en-US.json"],
+                output_root=root / "out",
+                run_id="agent-draft-001",
+                max_segments=2,
+                synthetic_draft=True,
+            )
+
+            self.assertEqual(result["status"], "draft_package_created")
+            self.assertEqual(result["reflection"]["status"], "review_artifacts_ready")
+            self.assertEqual(result["reflection"]["qa_status"], "pass")
+            self.assertEqual(result["reflection"]["delivery_decision_status"], "owner_review_required")
+            self.assertEqual(result["delivery"]["status"], "decision_ready")
+            self.assertEqual(result["delivery"]["decision_status"], "owner_review_required")
+            self.assertTrue(result["reflection"]["requires_user_confirmation_before_apply"])
+            self.assertTrue(Path(result["artifacts"]["agent_summary"]).is_file())
+            self.assertTrue(Path(result["artifacts"]["review_sheet_markdown"]).is_file())
+            self.assertTrue(Path(result["artifacts"]["llm_review_request"]).is_file())
+            self.assertTrue(Path(result["artifacts"]["llm_review_prompt"]).is_file())
+            self.assertEqual(result["reflection"]["llm_review_status"], "request_ready")
+            self.assertTrue(Path(result["artifacts"]["apply_plan_markdown"]).is_file())
+            self.assertTrue(Path(result["artifacts"]["delivery_decision_markdown"]).is_file())
+            delivery = Path(result["artifacts"]["delivery_directory"])
+            self.assertTrue((delivery / "files" / "locales" / "zh-CN.json").is_file())
+
+    def test_agent_run_synthetic_gettext_plural_preserves_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            (project / "messages.pot").write_text((GETTEXT_WESNOTH_ROOT / "messages.pot").read_text(encoding="utf-8"), encoding="utf-8")
+
+            result = run_agent(
+                project,
+                "zh-CN",
+                source_files=["messages.pot"],
+                output_root=root / "out",
+                run_id="agent-gettext-001",
+                max_segments=2,
+                synthetic_draft=True,
+            )
+
+            self.assertEqual(result["status"], "draft_package_created", result.get("reflection"))
+            self.assertEqual(result["routing"]["adapter_counts"], {"core.gettext-po": 1})
+            self.assertEqual(result["summary"]["segment_count"], 2)
+            self.assertEqual(result["reflection"]["qa_status"], "pass")
+            delivery = Path(result["artifacts"]["delivery_directory"])
+            packaged_target = delivery / "files" / "messages.zh_CN.pot"
+            self.assertTrue(packaged_target.is_file())
+            self.assertIn("%d", packaged_target.read_text(encoding="utf-8"))
+
+    def test_agent_run_imports_llm_responses_and_packages_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            _copy_json_fixture_project(project, include_existing_target=False)
+
+            seed = run_agent(
+                project,
+                "zh-CN",
+                output_root=root / "out",
+                run_id="seed-handoff",
+                max_segments=2,
+            )
+            responses_dir = root / "responses"
+            responses_dir.mkdir()
+            for packet_path in sorted(Path(seed["artifacts"]["work_packets"]).glob("*.json")):
+                packet = read_json(packet_path)
+                mapped = {segment["segment_id"]: f"[zh-CN] {segment['source']}" for segment in packet["segments"]}
+                (responses_dir / f"{packet['batch_id']}-response.md").write_text(
+                    "```json\n" + json.dumps(mapped, ensure_ascii=False) + "\n```",
+                    encoding="utf-8",
+                )
+
+            result = run_agent(
+                project,
+                "zh-CN",
+                output_root=root / "out",
+                run_id="agent-response-001",
+                max_segments=2,
+                responses_dir=responses_dir,
+            )
+
+            self.assertEqual(result["status"], "draft_package_created", result.get("reflection"))
+            self.assertEqual(result["reflection"]["response_import_status"], "pass")
+            self.assertEqual(result["reflection"]["qa_status"], "pass")
+            self.assertEqual(result["runs"]["handoff"]["run_id"], "agent-response-001-handoff")
+            self.assertEqual(result["runs"]["delivery"]["run_id"], "agent-response-001-delivery")
+            self.assertTrue(Path(result["artifacts"]["response_import"]).is_file())
+            self.assertTrue(Path(result["artifacts"]["delivery_directory"]).is_dir())
+
+    def test_agent_run_direct_http_provider_packages_delivery(self) -> None:
+        class ProviderHandler(BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                mapped = {
+                    segment["segment_id"]: f"[{payload['draft_request']['target_locale']}] {segment['source']}"
+                    for segment in payload["draft_request"]["segments"]
+                }
+                body = json.dumps(mapped, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            _copy_json_fixture_project(project, include_existing_target=False)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), ProviderHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            host, port = server.server_address[:2]
+            try:
+                result = run_agent(
+                    project,
+                    "zh-CN",
+                    source_files=["locales/en-US.json"],
+                    output_root=root / "out",
+                    run_id="agent-provider-001",
+                    max_segments=2,
+                    provider_url=f"http://{host}:{port}/generate",
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+            self.assertEqual(result["status"], "draft_package_created", result.get("reflection"))
+            self.assertEqual(result["agent"]["provider_mode"], "direct_http_provider")
+            self.assertTrue(result["agent"]["direct_model_api"])
+            self.assertEqual(result["reflection"]["provider_generation_status"], "pass")
+            self.assertEqual(result["reflection"]["qa_status"], "pass")
+            self.assertEqual(result["delivery"]["decision_status"], "owner_review_required")
+            self.assertTrue(Path(result["artifacts"]["provider_generation"]).is_file())
+            self.assertTrue(Path(result["artifacts"]["delivery_decision"]).is_file())
+            self.assertTrue(Path(result["artifacts"]["delivery_directory"]).is_dir())
+
+
+class ReviewAgentTests(unittest.TestCase):
+    def test_llm_review_request_and_import_are_segment_level(self) -> None:
+        segments = extract_segments(FIXTURE_ROOT / "locales" / "en-US.json", "en-US", "locales/en-US.json")
+        for segment in segments:
+            segment["target_locale"] = "zh-CN"
+            segment["target"] = f"[zh-CN] {segment['source']}"
+            segment["status"] = "generated"
+        request = create_llm_review_request(
+            segments,
+            "en-US",
+            "zh-CN",
+            [{"segment_id": segments[0]["segment_id"], "severity": "warning", "message": "deterministic note"}],
+            "review-run-001",
+            max_segments=2,
+        )
+        assert_protocol_schema(self, "llm-review-request", request)
+        prompt = render_llm_review_prompt(request)
+        self.assertIn("issues", prompt)
+        response = {
+            "issues": [
+                {
+                    "segment_id": request["segments"][0]["segment_id"],
+                    "severity": "blocking",
+                    "category": "meaning",
+                    "message": "Target mistranslates the command.",
+                    "confidence": "medium",
+                    "suggested_target": "开始游戏",
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "llm-review-result.json"
+            result = import_llm_review_response(request, "```json\n" + json.dumps(response, ensure_ascii=False) + "\n```", output)
+            assert_protocol_schema(self, "llm-review-result", result)
+            self.assertEqual(result["status"], "fail")
+            self.assertEqual(result["summary"]["issue_count"], 1)
+            self.assertEqual(result["issues"][0]["segment_id"], request["segments"][0]["segment_id"])
+            self.assertTrue(output.is_file())
+
+
+class ProviderGenerationTests(unittest.TestCase):
+    def test_http_provider_generation_uses_generated_segment_contract(self) -> None:
+        class ProviderHandler(BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                mapped = {
+                    segment["segment_id"]: f"[{payload['draft_request']['target_locale']}] {segment['source']}"
+                    for segment in payload["draft_request"]["segments"]
+                }
+                body = json.dumps(mapped, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            _copy_json_fixture_project(project, include_existing_target=False)
+            source = project / "locales" / "en-US.json"
+            source_path = "locales/en-US.json"
+            initialized = initialize_project(project, "en-US", [source_path], ["zh-CN"])
+            state = Path(initialized["state_directory"])
+            segments = extract_segments(source, "en-US", source_path)
+            plan = create_batch_plan(segments, "en-US", ["zh-CN"], max_segments=10)
+            packet_dir = root / "work-packets"
+            request_dir = root / "draft-requests"
+            generated_dir = root / "generated-batches"
+            for batch in plan["batches"]:
+                packet = build_work_packet(plan, batch["batch_id"], segments, state, "zh-CN", limit_tokens=4000)
+                write_json(packet_dir / f"{batch['batch_id']}.json", packet)
+                write_json(request_dir / f"{batch['batch_id']}.json", create_draft_request(packet))
+            handoff = create_generation_handoff(packet_dir, request_dir, generated_dir, "zh-CN")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), ProviderHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            host, port = server.server_address[:2]
+            try:
+                result = generate_handoff_with_http_provider(
+                    handoff,
+                    f"http://{host}:{port}/generate",
+                    root / "generated.jsonl",
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+            self.assertEqual(result["status"], "pass", result["items"])
+            self.assertEqual(result["summary"]["generated_segment_count"], len(segments))
+            generated = read_jsonl(root / "generated.jsonl")
+            self.assertEqual(len(generated), len(segments))
+            self.assertEqual(generated[0]["generation"]["imported_from"], "llm_response")
+
+
+class WorkbenchUITests(unittest.TestCase):
+    def test_ui_server_inspects_runs_agent_and_reads_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            _copy_json_fixture_project(project, include_existing_target=False)
+
+            server = create_ui_server(port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            host, port = server.server_address[:2]
+            try:
+                home_status, home = _http_get(host, port, "/")
+                self.assertEqual(home_status, 200)
+                self.assertIn("Localize Anything Workbench", home)
+
+                inspect_status, inspected = _http_post_json(host, port, "/api/inspect", {"project": project.as_posix()})
+                self.assertEqual(inspect_status, 200)
+                self.assertEqual(inspected["status"], "pass")
+                self.assertEqual(inspected["routing"]["adapter_counts"], {"core.json-locale": 1})
+
+                run_status, run_payload = _http_post_json(
+                    host,
+                    port,
+                    "/api/agent-run",
+                    {
+                        "project": project.as_posix(),
+                        "source_locale": "en-US",
+                        "target_locale": "zh-CN",
+                        "source_files": ["locales/en-US.json"],
+                        "output_root": (root / "out").as_posix(),
+                        "run_id": "ui-agent-001",
+                        "max_segments": 2,
+                        "synthetic_draft": True,
+                    },
+                )
+                self.assertEqual(run_status, 200)
+                result = run_payload["agent_result"]
+                self.assertEqual(result["status"], "draft_package_created")
+                self.assertEqual(result["reflection"]["qa_status"], "pass")
+
+                sessions_status, sessions_payload = _http_post_json(host, port, "/api/sessions", {"project": project.as_posix()})
+                self.assertEqual(sessions_status, 200)
+                self.assertEqual(sessions_payload["session_index"]["latest_session_id"], "ui-agent-001")
+
+                read_status, artifact = _http_post_json(
+                    host,
+                    port,
+                    "/api/read-artifact",
+                    {"path": result["artifacts"]["review_sheet_markdown"]},
+                )
+                self.assertEqual(read_status, 200)
+                self.assertIn("Translation Review Sheet", artifact["content"])
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
 
 
 class UnifiedStagingTests(unittest.TestCase):
@@ -1007,10 +1927,20 @@ class DeliveryLifecycleTests(unittest.TestCase):
             apply_plan_markdown = render_apply_plan_markdown(apply_plan)
             self.assertIn("# Apply Plan", apply_plan_markdown)
             self.assertIn("apply-delivery --confirm-run-id test-run-001", apply_plan_markdown)
+            decision = create_delivery_decision_report(delivery, project)
+            assert_protocol_schema(self, "delivery-decision", decision)
+            self.assertEqual(decision["status"], "owner_review_required")
+            self.assertEqual(decision["summary"]["requires_confirmation_count"], 1)
+            self.assertEqual(decision["summary"]["requires_review_count"], 1)
+            decision_markdown = render_delivery_decision_markdown(decision)
+            self.assertIn("Delivery Decision Report", decision_markdown)
+            self.assertIn("apply-delivery --confirm-run-id test-run-001", decision_markdown)
             (locales / "zh-CN.json").write_text('{"changed": true}\n', encoding="utf-8")
             conflicted_plan = create_apply_plan(delivery, project)
             self.assertEqual(conflicted_plan["summary"]["conflict"], 1)
             self.assertTrue(conflicted_plan["blocked_by_conflicts"])
+            conflicted_decision = create_delivery_decision_report(delivery, project)
+            self.assertEqual(conflicted_decision["status"], "blocked")
 
             acceptance_path = state / "acceptances" / "test-run-001.json"
             acceptance = create_acceptance(
@@ -1168,7 +2098,104 @@ class ProtocolFilesTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         result = validate_protocol_tree(root / "protocol")
         self.assertEqual(result["status"], "pass", result["errors"])
-        self.assertEqual(result["schemas_checked"], 13)
+        self.assertEqual(result["schemas_checked"], 19)
+
+
+class V021ModeSystemBenchmarkTests(unittest.TestCase):
+    def test_v021_mode_system_benchmark_passes_with_executable_assertions(self) -> None:
+        benchmark = _load_v021_mode_system_benchmark()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = benchmark.run_benchmark(root / "work", root / "report")
+
+            self.assertEqual(report["status"], "pass", report["failed_checks"])
+            self.assertEqual(report["verdict"], "PASS: v0.2.1 obsolete preservation verified")
+            self.assertTrue((root / "report" / "report.json").is_file())
+            self.assertTrue((root / "report" / "report.md").is_file())
+
+            blind = report["modes"]["blind_benchmark"]
+            maintenance = report["modes"]["existing_locale_maintenance"]
+            greenfield = report["modes"]["greenfield_localization"]
+            rewrite = report["modes"]["rewrite_or_harmonization"]
+
+            self.assertEqual(blind["generated_segment_count"], blind["source_segment_count"])
+            self.assertTrue(blind["leakage_check"]["pass"], blind["leakage_check"])
+            self.assertEqual(maintenance["preserved_segment_count"], 10)
+            self.assertEqual(maintenance["generated_segment_count"], 2)
+            self.assertEqual(maintenance["stale_segment_count"], 1)
+            self.assertEqual(maintenance["missing_segment_count"], 1)
+            self.assertEqual(maintenance["obsolete_segment_count"], 2)
+            obsolete = maintenance["obsolete_preservation_check"]
+            self.assertTrue(obsolete["pass"], obsolete)
+            self.assertTrue(obsolete["detected_as_obsolete"])
+            self.assertTrue(obsolete["present_in_original_target"])
+            self.assertTrue(obsolete["present_in_staged_target"])
+            self.assertTrue(obsolete["present_after_apply_to_copy"])
+            self.assertFalse(obsolete["deleted_by_apply_plan"])
+            self.assertFalse(obsolete["generation_facing_leakage"])
+            self.assertTrue(obsolete["requires_owner_review"])
+            self.assertTrue(obsolete["not_counted_as_generated"])
+            self.assertEqual(report["obsolete_preservation_check"]["obsolete_key"], "legacy_removed_key")
+            self.assertLess(maintenance["generated_segment_count"], blind["generated_segment_count"])
+            self.assertFalse(greenfield["existing_target_detected"])
+            self.assertEqual(rewrite["explicit_rewrite_count"], rewrite["source_segment_count"])
+            self.assertTrue(rewrite["obsolete_preservation_check"]["present_after_apply_to_copy"])
+            self.assertTrue(report["same_project_behavior_difference"]["pass"])
+            self.assertTrue(all(check["pass"] for check in report["negative_checks"]))
+
+    def test_v021_mode_system_negative_validators_fail_closed(self) -> None:
+        benchmark = _load_v021_mode_system_benchmark()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            leaky = root / "leaky-work-packet.json"
+            leaky.write_text(json.dumps({"target": benchmark.SENTINEL}, ensure_ascii=False), encoding="utf-8")
+
+            leakage = benchmark.validate_no_leakage([leaky.as_posix()], [benchmark.SENTINEL])
+            self.assertFalse(leakage["pass"])
+            self.assertEqual(leakage["matches"][0]["text"], benchmark.SENTINEL)
+
+            mass_rewrite = benchmark.validate_maintenance_not_mass_rewrite(
+                {"summary": {"source_segment_count": 12, "candidate_segment_count": 12, "preserved_segment_count": 0}}
+            )
+            self.assertFalse(mass_rewrite["pass"])
+            self.assertIn("mass rewrite", mass_rewrite["message"])
+
+            original = root / "original.xml"
+            staged = root / "staged.xml"
+            applied = root / "applied.xml"
+            original.write_text(
+                f'<resources><string name="{benchmark.OBSOLETE_KEY}">{benchmark.OBSOLETE_TEXT}</string></resources>\n',
+                encoding="utf-8",
+            )
+            staged.write_text("<resources></resources>\n", encoding="utf-8")
+            applied.write_text("<resources></resources>\n", encoding="utf-8")
+            reference_plan = {
+                "obsolete_references": [
+                    {
+                        "identity": benchmark.OBSOLETE_IDENTITY,
+                        "resource_key": benchmark.OBSOLETE_RESOURCE_KEY,
+                    }
+                ]
+            }
+            delivery_decision = {
+                "decisions": [
+                    {
+                        "type": "obsolete_target_reference",
+                        "status": "requires_review",
+                        "evidence": {"obsolete_references": reference_plan["obsolete_references"]},
+                    }
+                ]
+            }
+            obsolete = benchmark.validate_obsolete_target_preservation(
+                reference_plan,
+                delivery_decision,
+                {"operations": [{"action": "replace", "destination": benchmark.TARGET_FILE}]},
+                original,
+                staged,
+                applied,
+            )
+            self.assertFalse(obsolete["pass"])
+            self.assertIn("dropped obsolete target-only key legacy_removed_key", obsolete["message"])
 
 
 class SkillFilesTests(unittest.TestCase):
@@ -1185,6 +2212,47 @@ class SkillFilesTests(unittest.TestCase):
         self.assertIn("$localize-anything", metadata)
         for reference in ("workflow.md", "memory-and-context.md", "qa-and-delivery.md", "adapters.md"):
             self.assertTrue((skill_root / "references" / reference).is_file())
+
+
+def _copy_json_fixture_project(project: Path, include_existing_target: bool = True) -> None:
+    locales = project / "locales"
+    locales.mkdir(parents=True)
+    (locales / "en-US.json").write_text((FIXTURE_ROOT / "locales" / "en-US.json").read_text(encoding="utf-8"), encoding="utf-8")
+    if include_existing_target:
+        (locales / "zh-CN.json").write_text((FIXTURE_ROOT / "locales" / "zh-CN.json").read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def _http_get(host: str, port: int, path: str) -> tuple[int, str]:
+    connection = http.client.HTTPConnection(host, port, timeout=10)
+    try:
+        connection.request("GET", path)
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+        return response.status, body
+    finally:
+        connection.close()
+
+
+def _http_post_json(host: str, port: int, path: str, payload: dict[str, object]) -> tuple[int, dict[str, object]]:
+    connection = http.client.HTTPConnection(host, port, timeout=30)
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        connection.request("POST", path, body=body, headers={"Content-Type": "application/json"})
+        response = connection.getresponse()
+        data = json.loads(response.read().decode("utf-8"))
+        return response.status, data
+    finally:
+        connection.close()
+
+
+def _load_v021_mode_system_benchmark():
+    path = REPOSITORY_ROOT / "benchmarks" / "v021-mode-system" / "run.py"
+    spec = importlib.util.spec_from_file_location("v021_mode_system_benchmark", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load benchmark module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _write_minimal_xlsx(path: Path) -> None:

@@ -3,7 +3,7 @@
   "$id": "https://localize-anything.dev/schemas/draft-request.schema.json",
   "title": "Localize Anything Translation Draft Request",
   "type": "object",
-  "required": ["protocol_version", "request_id", "packet_id", "batch_id", "source_locale", "target_locale", "task", "instructions", "output_contract", "segments"],
+  "required": ["protocol_version", "request_id", "packet_id", "batch_id", "source_locale", "target_locale", "operating_mode", "reference_policy", "task", "instructions", "output_contract", "segments"],
   "properties": {
     "protocol_version": { "const": "0.1" },
     "request_id": { "type": "string", "minLength": 1 },
@@ -11,6 +11,13 @@
     "batch_id": { "type": "string", "minLength": 1 },
     "source_locale": { "type": "string", "minLength": 1 },
     "target_locale": { "type": "string", "minLength": 1 },
+    "operating_mode": {
+      "enum": ["blind_benchmark", "greenfield_localization", "existing_locale_maintenance", "rewrite_or_harmonization"]
+    },
+    "reference_policy": {
+      "enum": ["blind", "style_only", "tm_assisted", "preserve_existing"]
+    },
+    "mode_contract": { "type": "object", "additionalProperties": true },
     "task": { "const": "generate_translation_draft" },
     "instructions": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
     "output_contract": {

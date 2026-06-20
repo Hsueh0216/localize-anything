@@ -5,7 +5,9 @@
   "project": {
     "source_locale": "en-US",
     "target_locales": ["zh-CN"],
-    "mode": "standard_project"
+    "mode": "standard_project",
+    "operating_mode": "greenfield_localization",
+    "reference_policy": "style_only"
   },
   "source_material": [
     {

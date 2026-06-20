@@ -44,6 +44,8 @@
     "delivery-manifest.json",
     "qa-report.md",
     "delivery-dashboard.json",
-    "delivery-dashboard.md"
+    "delivery-dashboard.md",
+    "delivery-decision.json",
+    "delivery-decision.md"
   ]
 }

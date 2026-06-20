@@ -5,6 +5,14 @@
   "batch_id": "batch-0001",
   "source_locale": "en-US",
   "target_locale": "zh-CN",
+  "operating_mode": "greenfield_localization",
+  "reference_policy": "style_only",
+  "mode_contract": {
+    "operating_mode": "greenfield_localization",
+    "reference_policy": "style_only",
+    "target_reference_visibility": "approved terminology and style guidance only",
+    "generation_scope": "generate drafts for all selected source segments"
+  },
   "task": "generate_translation_draft",
   "instructions": [
     "Translate each segment from source_locale to target_locale.",
@@ -19,7 +27,9 @@
     "record_schema": "segment.schema.json",
     "required_fields": ["segment_id", "source", "source_hash", "source_path", "target", "target_locale", "status"],
     "status": "generated",
-    "coverage": "exactly_all_segments_in_request"
+    "coverage": "exactly_all_segments_in_request",
+    "operating_mode": "greenfield_localization",
+    "reference_policy": "style_only"
   },
   "segments": [
     {

@@ -30,12 +30,33 @@ TARGET_ALIASES = ("target", "translation", "translated", "localized", "value", "
 
 
 def create_draft_request(work_packet: dict[str, Any]) -> dict[str, Any]:
+    operating_mode = str(work_packet.get("operating_mode") or "greenfield_localization")
+    reference_policy = str(work_packet.get("reference_policy") or "style_only")
+    instructions = [
+        "Translate each segment from source_locale to target_locale.",
+        "Return JSONL records that preserve segment_id, source, source_hash, source_path, context, constraints, and status.",
+        "Set target_locale to the requested target locale.",
+        "Set target to the translated draft text.",
+        "Set status to generated.",
+        "Preserve placeholders exactly as listed in constraints.placeholders.",
+        "Do not invent, drop, reorder, or merge segment records.",
+        "If a segment cannot be translated safely, preserve the source as target and add a generation.warning field.",
+        "If the host agent captures a non-JSONL response, normalize it with import-generated-response before collect-generated.",
+    ]
+    if reference_policy == "blind":
+        instructions.append("Blind benchmark mode: do not use existing target translations or reference locale files.")
+    elif reference_policy == "style_only":
+        instructions.append("Style-only mode: use approved terminology and style guidance only; do not copy existing segment translations.")
+    elif reference_policy == "preserve_existing":
+        instructions.append("Maintenance mode: translate only segments present in this request; reviewed unchanged translations are preserved outside this generation batch.")
     request_id = hashlib.sha256(
         json.dumps(
             {
                 "packet_id": work_packet["packet_id"],
                 "batch_id": work_packet["batch_id"],
                 "target_locale": work_packet["target_locale"],
+                "operating_mode": operating_mode,
+                "reference_policy": reference_policy,
                 "segments": [segment["segment_id"] for segment in work_packet.get("segments", [])],
             },
             sort_keys=True,
@@ -48,24 +69,19 @@ def create_draft_request(work_packet: dict[str, Any]) -> dict[str, Any]:
         "batch_id": work_packet["batch_id"],
         "source_locale": work_packet["source_locale"],
         "target_locale": work_packet["target_locale"],
+        "operating_mode": operating_mode,
+        "reference_policy": reference_policy,
+        "mode_contract": work_packet.get("mode_contract", {}),
         "task": "generate_translation_draft",
-        "instructions": [
-            "Translate each segment from source_locale to target_locale.",
-            "Return JSONL records that preserve segment_id, source, source_hash, source_path, context, constraints, and status.",
-            "Set target_locale to the requested target locale.",
-            "Set target to the translated draft text.",
-            "Set status to generated.",
-            "Preserve placeholders exactly as listed in constraints.placeholders.",
-            "Do not invent, drop, reorder, or merge segment records.",
-            "If a segment cannot be translated safely, preserve the source as target and add a generation.warning field.",
-            "If the host agent captures a non-JSONL response, normalize it with import-generated-response before collect-generated.",
-        ],
+        "instructions": instructions,
         "output_contract": {
             "format": "jsonl",
             "record_schema": "segment.schema.json",
             "required_fields": ["segment_id", "source", "source_hash", "source_path", "target", "target_locale", "status"],
             "status": "generated",
             "coverage": "exactly_all_segments_in_request",
+            "operating_mode": operating_mode,
+            "reference_policy": reference_policy,
             "import_command": "localize-anything import-generated-response <work-packet> <response> --generated-output <batch-jsonl>",
         },
         "segments": work_packet.get("segments", []),
@@ -80,6 +96,9 @@ def render_draft_prompt(draft_request: dict[str, Any]) -> str:
         "batch_id": draft_request.get("batch_id"),
         "source_locale": draft_request.get("source_locale"),
         "target_locale": draft_request.get("target_locale"),
+        "operating_mode": draft_request.get("operating_mode"),
+        "reference_policy": draft_request.get("reference_policy"),
+        "mode_contract": draft_request.get("mode_contract", {}),
         "task": draft_request.get("task"),
         "instructions": draft_request.get("instructions", []),
         "output_contract": draft_request.get("output_contract", {}),
@@ -94,6 +113,8 @@ def render_draft_prompt(draft_request: dict[str, Any]) -> str:
             f"- Batch ID: `{draft_request.get('batch_id')}`",
             f"- Source locale: `{draft_request.get('source_locale')}`",
             f"- Target locale: `{draft_request.get('target_locale')}`",
+            f"- Operating mode: `{draft_request.get('operating_mode')}`",
+            f"- Reference policy: `{draft_request.get('reference_policy')}`",
             "",
             "Translate every segment in the request payload.",
             "",
@@ -176,6 +197,12 @@ def render_generation_instructions(
         "```",
         "",
         "4. Continue with `localize-run --generated-dir` or the lower-level collect/stage/package commands.",
+        "",
+        "For direct provider execution, use:",
+        "",
+        "```bash",
+        f"python -m runtime.localize_anything provider-generate {handoff_path} --provider-url <url> --generated-output {(generated_output or Path('generated.jsonl')).as_posix()}",
+        "```",
         "",
         "## Directories",
         "",
@@ -417,8 +444,6 @@ def create_generation_handoff(
     packet_paths = {path.stem: path for path in sorted(work_packet_dir.glob("*.json"))}
     request_paths = {path.stem: path for path in sorted(draft_request_dir.glob("*.json"))}
     batch_ids = sorted(packet_paths.keys() | request_paths.keys())
-    if not batch_ids:
-        raise ValueError("No work packets or draft requests were found")
 
     batches: list[dict[str, Any]] = []
     handoff_input: list[dict[str, str]] = []
@@ -455,6 +480,8 @@ def create_generation_handoff(
 
     digest = hashlib.sha256(json.dumps(handoff_input, sort_keys=True).encode("utf-8")).hexdigest()[:16]
     locales = sorted({str(batch.get("target_locale")) for batch in batches if batch.get("target_locale")})
+    if not locales and target_locale:
+        locales = [target_locale]
     return {
         "protocol_version": PROTOCOL_VERSION,
         "handoff_id": digest,
@@ -470,6 +497,55 @@ def create_generation_handoff(
             "validation_command": "localize-anything validate-generated <work-packet> <generated-jsonl>",
         },
         "batches": batches,
+    }
+
+
+def create_retry_handoff(
+    handoff: dict[str, Any],
+    failure_report: dict[str, Any],
+    generated_dir: Path | None = None,
+) -> dict[str, Any]:
+    failed_batch_ids = _failed_batch_ids(failure_report)
+    if not failed_batch_ids:
+        raise ValueError("No failed batches were found in the generation report")
+
+    original_batches = {str(batch.get("batch_id", "")): batch for batch in handoff.get("batches", [])}
+    missing = sorted(batch_id for batch_id in failed_batch_ids if batch_id not in original_batches)
+    if missing:
+        raise ValueError(f"Failed batch ids were not found in handoff: {', '.join(missing)}")
+
+    output_generated_dir = generated_dir.as_posix() if generated_dir else str(handoff.get("generated_dir", "generated-batches"))
+    retry_batches: list[dict[str, Any]] = []
+    for batch_id in failed_batch_ids:
+        batch = dict(original_batches[batch_id])
+        batch["status"] = "pending"
+        batch["retry_of"] = handoff.get("handoff_id")
+        if generated_dir is not None:
+            batch["generated"] = (generated_dir / f"{batch_id}.jsonl").as_posix()
+        retry_batches.append(batch)
+
+    retry_input = {
+        "parent_handoff_id": handoff.get("handoff_id"),
+        "failed_batch_ids": failed_batch_ids,
+        "generated_dir": output_generated_dir,
+    }
+    digest = hashlib.sha256(json.dumps(retry_input, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "handoff_id": f"retry-{digest}",
+        "parent_handoff_id": handoff.get("handoff_id"),
+        "task": "host_agent_translation_generation",
+        "target_locales": handoff.get("target_locales", []),
+        "request_count": len(retry_batches),
+        "generated_dir": output_generated_dir,
+        "output_contract": handoff.get("output_contract", {}),
+        "batches": retry_batches,
+        "retry": {
+            "source_handoff_id": handoff.get("handoff_id"),
+            "source_report_status": failure_report.get("status"),
+            "failed_batch_ids": failed_batch_ids,
+            "reason": "retry_failed_or_missing_generation_batches",
+        },
     }
 
 
@@ -535,11 +611,30 @@ def _duplicates(values: list[str]) -> list[str]:
     return sorted(duplicates)
 
 
+def _failed_batch_ids(report: dict[str, Any]) -> list[str]:
+    failed: set[str] = set()
+    for batch in report.get("batches", []):
+        batch_id = str(batch.get("batch_id") or "")
+        if not batch_id:
+            continue
+        if (
+            batch.get("import_status") == "fail"
+            or batch.get("qa_status") == "fail"
+            or int(batch.get("blocking_count", 0)) > 0
+        ):
+            failed.add(batch_id)
+    for item in report.get("items", []):
+        batch_id = str(item.get("batch_id") or "")
+        if batch_id and item.get("severity") == "blocking":
+            failed.add(batch_id)
+    return sorted(failed)
+
+
 def _response_candidates(response_text: str) -> list[tuple[str, str]]:
     candidates: list[tuple[str, str]] = []
     for index, match in enumerate(FENCED_BLOCK_RE.finditer(response_text), 1):
         candidates.append((f"fenced-{index}", match.group(1).strip()))
-    stripped = response_text.strip()
+    stripped = response_text.lstrip("\ufeff").strip()
     if stripped:
         candidates.append(("body", stripped))
     return candidates

@@ -24,6 +24,7 @@ def stage_generated(
     source_locale: str,
     target_locale: str,
     source_files: list[str] | None = None,
+    preserve_target_only: bool = False,
 ) -> dict[str, Any]:
     inspection = inspect_project(project_root)
     inventory = {item["path"]: item for item in inspection["supported_files"]}
@@ -39,7 +40,19 @@ def stage_generated(
             raise ValueError(f"No generated segments found for source file: {source_file}")
         source_path = project_root / source_file
         adapter = inventory[source_file]["adapter"]
-        outputs.append(_stage_one(adapter, source_path, source_file, source_segments, staging_dir, source_locale, target_locale, project_root))
+        outputs.append(
+            _stage_one(
+                adapter,
+                source_path,
+                source_file,
+                source_segments,
+                staging_dir,
+                source_locale,
+                target_locale,
+                project_root,
+                preserve_target_only,
+            )
+        )
 
     return {
         "protocol_version": PROTOCOL_VERSION,
@@ -62,9 +75,10 @@ def _stage_one(
     source_locale: str,
     target_locale: str,
     project_root: Path,
+    preserve_target_only: bool,
 ) -> dict[str, Any]:
     if adapter == "core.android-strings":
-        result = stage_android_strings(source_path, segments, staging_dir, target_locale, project_root)
+        result = stage_android_strings(source_path, segments, staging_dir, target_locale, project_root, preserve_target_only)
         return _output_record(adapter, source_file, result["destination"], result["output"], len(segments), result)
     if adapter == "core.ios-strings":
         result = stage_ios_strings(source_path, segments, staging_dir, target_locale, project_root)

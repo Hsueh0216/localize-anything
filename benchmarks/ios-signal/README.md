@@ -50,7 +50,8 @@ Signal/translations/zh-Hans.lproj/Localizable.strings
 - Create host-agent draft requests from work packets.
 - Validate generated segment JSONL before staging output files.
 - Stage the target locale file instead of mutating the source workspace.
-- Produce a delivery snapshot and developer/translator dashboard.
+- Produce a delivery snapshot, developer/translator dashboard, and Delivery
+  Agent decision report.
 
 ## Licensing
 

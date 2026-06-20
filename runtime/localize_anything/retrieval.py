@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from . import PROTOCOL_VERSION
+from .modes import mode_contract, resolve_mode_policy
 from .planning import estimate_tokens
 
 
@@ -32,6 +33,8 @@ def build_work_packet(
     limit_tokens: int = 4000,
     glossary_limit: int = 50,
     tm_limit: int = 40,
+    operating_mode: str | None = None,
+    reference_policy: str | None = None,
 ) -> dict[str, Any]:
     batch = next((item for item in batch_plan.get("batches", []) if item.get("batch_id") == batch_id), None)
     if not batch:
@@ -41,20 +44,24 @@ def build_work_packet(
     if len(selected) != len(batch["segment_ids"]):
         raise ValueError(f"Batch {batch_id} references missing segments")
 
+    operating_mode, reference_policy = resolve_mode_policy(
+        operating_mode or batch_plan.get("operating_mode"),
+        reference_policy or batch_plan.get("reference_policy"),
+    )
     context_sections = _select_context_sections(state_dir / "localization-context.md", selected)
-    glossary = _select_glossary(state_dir / "glossary.csv", selected, target_locale, glossary_limit)
-    tm = _select_tm(state_dir / "translation-memory.jsonl", selected, target_locale, tm_limit)
+    glossary = [] if reference_policy == "blind" else _select_glossary(state_dir / "glossary.csv", selected, target_locale, glossary_limit)
+    tm = [] if reference_policy in {"blind", "style_only"} else _select_tm(state_dir / "translation-memory.jsonl", selected, target_locale, tm_limit)
 
     trimmed: list[str] = []
-    packet = _packet(batch_plan, batch_id, selected, target_locale, context_sections, glossary, tm, limit_tokens, trimmed)
+    packet = _packet(batch_plan, batch_id, selected, target_locale, context_sections, glossary, tm, limit_tokens, trimmed, operating_mode, reference_policy)
     while packet["budget"]["estimated_tokens"] > limit_tokens and tm:
         tm.pop()
         trimmed.append("low_priority_translation_memory")
-        packet = _packet(batch_plan, batch_id, selected, target_locale, context_sections, glossary, tm, limit_tokens, trimmed)
+        packet = _packet(batch_plan, batch_id, selected, target_locale, context_sections, glossary, tm, limit_tokens, trimmed, operating_mode, reference_policy)
     while packet["budget"]["estimated_tokens"] > limit_tokens and glossary:
         glossary.pop()
         trimmed.append("low_priority_glossary")
-        packet = _packet(batch_plan, batch_id, selected, target_locale, context_sections, glossary, tm, limit_tokens, trimmed)
+        packet = _packet(batch_plan, batch_id, selected, target_locale, context_sections, glossary, tm, limit_tokens, trimmed, operating_mode, reference_policy)
     if packet["budget"]["estimated_tokens"] > limit_tokens:
         trimmed.append("source_or_p0_exceeds_budget_shrink_batch")
         packet["budget"]["trimmed"] = sorted(set(trimmed))
@@ -196,8 +203,18 @@ def _packet(
     tm: list[dict[str, Any]],
     limit_tokens: int,
     trimmed: list[str],
+    operating_mode: str,
+    reference_policy: str,
 ) -> dict[str, Any]:
-    memory = {"context_sections": context_sections, "glossary": glossary, "translation_memory": tm}
+    memory = {
+        "context_sections": context_sections,
+        "glossary": glossary,
+        "translation_memory": tm,
+        "reference_policy": {
+            "policy": reference_policy,
+            "target_reference_visibility": mode_contract(operating_mode, reference_policy)["target_reference_visibility"],
+        },
+    }
     body = {"segments": segments, "memory": memory}
     estimated = estimate_tokens(json.dumps(body, ensure_ascii=False))
     digest = hashlib.sha256(
@@ -209,6 +226,9 @@ def _packet(
         "batch_id": batch_id,
         "source_locale": plan["source_locale"],
         "target_locale": target_locale,
+        "operating_mode": operating_mode,
+        "reference_policy": reference_policy,
+        "mode_contract": mode_contract(operating_mode, reference_policy),
         "segments": segments,
         "memory": memory,
         "budget": {

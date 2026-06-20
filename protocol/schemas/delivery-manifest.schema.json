@@ -10,11 +10,17 @@
     "delivery_status": { "enum": ["draft_package", "review_ready", "blocked", "applied_draft", "user_accepted"] },
     "project": {
       "type": "object",
-      "required": ["source_locale", "target_locales", "mode"],
+      "required": ["source_locale", "target_locales", "mode", "operating_mode", "reference_policy"],
       "properties": {
         "source_locale": { "type": "string" },
         "target_locales": { "type": "array", "items": { "type": "string" } },
-        "mode": { "enum": ["inline", "lightweight_file", "standard_project"] }
+        "mode": { "enum": ["inline", "lightweight_file", "standard_project"] },
+        "operating_mode": {
+          "enum": ["blind_benchmark", "greenfield_localization", "existing_locale_maintenance", "rewrite_or_harmonization"]
+        },
+        "reference_policy": {
+          "enum": ["blind", "style_only", "tm_assisted", "preserve_existing"]
+        }
       },
       "additionalProperties": true
     },

@@ -2,24 +2,30 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 from . import __version__
 from .acceptance import create_acceptance
+from .agent import run_agent
+from .android_app_test import run_android_app_test
 from .android_strings_adapter import extract_segments as extract_android_strings
 from .android_strings_adapter import rebuild as rebuild_android_strings
 from .android_strings_adapter import stage_rebuild as stage_android_strings
 from .android_strings_adapter import validate_pair as validate_android_strings
 from .apply import create_apply_plan, execute_apply, render_apply_plan_markdown
 from .contracts import validate_adapter_tree
+from .chinese_draft import generate_chinese_draft_file
 from .dashboard import build_delivery_dashboard, render_dashboard_markdown
 from .delivery import package_delivery
+from .delivery_decision import create_delivery_decision_report, render_delivery_decision_markdown
 from .generation import (
     collect_generated_handoff,
     create_draft_request,
     create_generation_handoff,
+    create_retry_handoff,
     import_generated_handoff,
     import_generated_response,
     render_draft_prompt,
@@ -39,9 +45,12 @@ from .json_adapter import extract_segments, rebuild, validate_pair
 from .markup_adapter import extract_segments as extract_markup_segments
 from .markup_adapter import rebuild as rebuild_markup
 from .markup_adapter import validate_pair as validate_markup_pair
+from .modes import OPERATING_MODES, REFERENCE_POLICIES
 from .mo_compiler import compile_segments_to_mo
 from .planning import create_batch_plan
-from .project import initialize_project, inspect_project
+from .project import initialize_project, inspect_project, load_session_index
+from .provider import generate_handoff_with_http_provider
+from .reflection import create_llm_review_request, import_llm_review_response, render_llm_review_prompt
 from .retrieval import build_work_packet
 from .review import import_review
 from .review_sheet import write_review_sheet
@@ -71,6 +80,9 @@ from .xliff_adapter import rebuild as rebuild_xliff
 from .xliff_adapter import validate_pair as validate_xliff_pair
 
 
+from .deepseek_provider import translate_batch_deepseek
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="localize-anything", description="Reference runtime for the Localize Anything protocol")
     parser.add_argument("--version", action="version", version=__version__)
@@ -79,6 +91,10 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser = subparsers.add_parser("inspect", help="Discover files supported by alpha adapters")
     inspect_parser.add_argument("project", type=Path)
     inspect_parser.add_argument("--output", type=Path)
+
+    sessions_parser = subparsers.add_parser("sessions", help="List resumable Localize Anything sessions for a project")
+    sessions_parser.add_argument("project", type=Path)
+    sessions_parser.add_argument("--output", type=Path)
 
     preflight_parser = subparsers.add_parser("preflight", help="Initialize deterministic project state and inventory")
     preflight_parser.add_argument("project", type=Path)
@@ -89,6 +105,8 @@ def build_parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument("--preflight-mode", choices=["auto", "full", "layered", "light", "skip_deep"], default="auto")
     preflight_parser.add_argument("--privacy-mode", choices=["standard", "minimal_disclosure", "local_only"], default="standard")
     preflight_parser.add_argument("--data-classification", choices=["public", "internal", "confidential", "restricted"], default="internal")
+    preflight_parser.add_argument("--operating-mode", choices=OPERATING_MODES)
+    preflight_parser.add_argument("--reference-policy", choices=REFERENCE_POLICIES)
     preflight_parser.add_argument("--output", type=Path)
 
     extract_parser = subparsers.add_parser("extract-json", help="Extract string leaves from a JSON locale file")
@@ -314,6 +332,8 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--source-locale", required=True)
     plan_parser.add_argument("--target-locale", action="append", required=True, dest="target_locales")
     plan_parser.add_argument("--max-segments", type=int, default=80)
+    plan_parser.add_argument("--operating-mode", choices=OPERATING_MODES)
+    plan_parser.add_argument("--reference-policy", choices=REFERENCE_POLICIES)
     plan_parser.add_argument("--output", type=Path)
 
     retrieve_parser = subparsers.add_parser("retrieve", help="Build an ephemeral working context packet")
@@ -376,6 +396,42 @@ def build_parser() -> argparse.ArgumentParser:
     collect_parser.add_argument("--generated-output", type=Path)
     collect_parser.add_argument("--output", type=Path)
 
+    retry_handoff_parser = subparsers.add_parser("retry-handoff", help="Create a handoff manifest for failed or missing generation batches")
+    retry_handoff_parser.add_argument("handoff", type=Path)
+    retry_handoff_parser.add_argument("generation_report", type=Path)
+    retry_handoff_parser.add_argument("--generated-dir", type=Path)
+    retry_handoff_parser.add_argument("--output", type=Path)
+
+    provider_generate_parser = subparsers.add_parser("provider-generate", help="Generate batches through a direct HTTP JSON provider")
+    provider_generate_parser.add_argument("handoff", type=Path)
+    provider_generate_parser.add_argument("--provider-url", required=True)
+    provider_generate_parser.add_argument("--api-key-env")
+    provider_generate_parser.add_argument("--generated-output", type=Path)
+    provider_generate_parser.add_argument("--timeout-seconds", type=int, default=60)
+    provider_generate_parser.add_argument("--output", type=Path)
+
+    chinese_draft_parser = subparsers.add_parser(
+        "generate-chinese-draft",
+        help="Create local Chinese draft generated-segment JSONL for E2E testing",
+    )
+    chinese_draft_parser.add_argument("segments", type=Path)
+    chinese_draft_parser.add_argument("--target-locale", default="zh-CN")
+    chinese_draft_parser.add_argument("--generated-output", type=Path, required=True)
+    chinese_draft_parser.add_argument("--provider", default="codex-local")
+    chinese_draft_parser.add_argument("--quality-claim", default="local_chinese_draft_for_e2e")
+    chinese_draft_parser.add_argument("--output", type=Path)
+
+    deepseek_parser = subparsers.add_parser(
+        "deepseek-generate",
+        help="Translate segments via DeepSeek API and write generated JSONL",
+    )
+    deepseek_parser.add_argument("segments", type=Path, help="JSONL file of extracted segments")
+    deepseek_parser.add_argument("--target-locale", required=True, help="e.g. ja, ko, zh-CN")
+    deepseek_parser.add_argument("--source-locale", default="en-US")
+    deepseek_parser.add_argument("--model", default="deepseek-chat")
+    deepseek_parser.add_argument("--generated-output", type=Path, required=True)
+    deepseek_parser.add_argument("--output", type=Path)
+
     stage_generated_parser = subparsers.add_parser("stage-generated", help="Route generated segment JSONL to adapter-specific staged output files")
     stage_generated_parser.add_argument("project", type=Path)
     stage_generated_parser.add_argument("generated", type=Path)
@@ -405,8 +461,62 @@ def build_parser() -> argparse.ArgumentParser:
     localize_run_parser.add_argument("--preflight-mode", default="auto", choices=["auto", "light", "full", "layered", "skip_deep"])
     localize_run_parser.add_argument("--privacy-mode", default="standard")
     localize_run_parser.add_argument("--data-classification", default="internal")
+    localize_run_parser.add_argument("--operating-mode", choices=OPERATING_MODES)
+    localize_run_parser.add_argument("--reference-policy", choices=REFERENCE_POLICIES)
     localize_run_parser.add_argument("--status", choices=["draft_package", "review_ready", "blocked"], default="draft_package")
     localize_run_parser.add_argument("--output", type=Path)
+
+    agent_run_parser = subparsers.add_parser(
+        "agent-run",
+        help="Run the provider-agnostic routing, parallelization, and reflection localization agent",
+    )
+    agent_run_parser.add_argument("project", type=Path)
+    agent_run_parser.add_argument("--source-locale", default="en-US")
+    agent_run_parser.add_argument("--target-locale", required=True)
+    agent_run_parser.add_argument("--source-file", action="append", dest="source_files")
+    agent_run_parser.add_argument("--output-root", type=Path)
+    agent_run_parser.add_argument("--run-id")
+    agent_run_parser.add_argument("--max-segments", type=int, default=80)
+    agent_run_parser.add_argument("--limit-tokens", type=int, default=4000)
+    agent_run_parser.add_argument("--responses-dir", type=Path)
+    agent_run_parser.add_argument("--generated-dir", type=Path)
+    agent_run_parser.add_argument("--generated", type=Path)
+    agent_run_parser.add_argument("--synthetic-draft", action="store_true")
+    agent_run_parser.add_argument("--provider-url")
+    agent_run_parser.add_argument("--api-key-env")
+    agent_run_parser.add_argument("--provider-timeout-seconds", type=int, default=60)
+    agent_run_parser.add_argument("--delivery-run-id")
+    agent_run_parser.add_argument("--workflow-depth", default="ask", choices=["ask", "fast", "standard", "high_assurance"])
+    agent_run_parser.add_argument("--preflight-mode", default="auto", choices=["auto", "light", "full", "layered", "skip_deep"])
+    agent_run_parser.add_argument("--privacy-mode", default="standard")
+    agent_run_parser.add_argument("--data-classification", default="internal")
+    agent_run_parser.add_argument("--operating-mode", choices=OPERATING_MODES)
+    agent_run_parser.add_argument("--reference-policy", choices=REFERENCE_POLICIES)
+    agent_run_parser.add_argument("--status", choices=["draft_package", "review_ready", "blocked"], default="draft_package")
+    agent_run_parser.add_argument("--output", type=Path)
+
+    android_app_test_parser = subparsers.add_parser(
+        "android-app-test",
+        help="Run a full Android source-project localization test against an isolated app copy",
+    )
+    android_app_test_parser.add_argument("project", type=Path)
+    android_app_test_parser.add_argument("--source-locale", default="en-US")
+    android_app_test_parser.add_argument("--target-locale", required=True)
+    android_app_test_parser.add_argument("--source-file")
+    android_app_test_parser.add_argument("--output-root", type=Path)
+    android_app_test_parser.add_argument("--run-id", default="android-app-test")
+    android_app_test_parser.add_argument("--max-segments", type=int, default=20)
+    android_app_test_parser.add_argument("--limit-tokens", type=int, default=4000)
+    android_app_test_parser.add_argument("--generated-dir", type=Path)
+    android_app_test_parser.add_argument("--generated", type=Path)
+    android_app_test_parser.add_argument("--local-chinese-draft", action="store_true")
+    android_app_test_parser.add_argument("--require-real-generation", action="store_true")
+    android_app_test_parser.add_argument("--output", type=Path)
+
+    ui_parser = subparsers.add_parser("ui", help="Start the local web workbench")
+    ui_parser.add_argument("--host", default="127.0.0.1")
+    ui_parser.add_argument("--port", type=int, default=8765)
+    ui_parser.add_argument("--open", action="store_true")
 
     diff_parser = subparsers.add_parser("diff-segments", help="Classify incremental segment changes")
     diff_parser.add_argument("previous", type=Path)
@@ -440,6 +550,22 @@ def build_parser() -> argparse.ArgumentParser:
     review_sheet_parser.add_argument("--csv-output", type=Path)
     review_sheet_parser.add_argument("--output", type=Path)
 
+    llm_review_request_parser = subparsers.add_parser("llm-review-request", help="Create an LLM reflection request from generated segment JSONL")
+    llm_review_request_parser.add_argument("generated", type=Path)
+    llm_review_request_parser.add_argument("--source-locale", required=True)
+    llm_review_request_parser.add_argument("--target-locale", required=True)
+    llm_review_request_parser.add_argument("--run-id")
+    llm_review_request_parser.add_argument("--max-segments", type=int, default=80)
+    llm_review_request_parser.add_argument("--deterministic-report", type=Path)
+    llm_review_request_parser.add_argument("--prompt-output", type=Path)
+    llm_review_request_parser.add_argument("--output", type=Path)
+
+    import_llm_review_parser = subparsers.add_parser("import-llm-review", help="Import an LLM reflection response into segment-level issues")
+    import_llm_review_parser.add_argument("request", type=Path)
+    import_llm_review_parser.add_argument("response", type=Path)
+    import_llm_review_parser.add_argument("--review-output", type=Path)
+    import_llm_review_parser.add_argument("--output", type=Path)
+
     signoff_parser = subparsers.add_parser("sign-off", help="Create user-owned scoped acceptance for a delivery manifest")
     signoff_parser.add_argument("manifest", type=Path)
     signoff_parser.add_argument("--accepted-by", required=True)
@@ -467,6 +593,12 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_parser.add_argument("delivery_dir", type=Path)
     dashboard_parser.add_argument("--markdown-output", type=Path)
     dashboard_parser.add_argument("--output", type=Path)
+
+    delivery_decision_parser = subparsers.add_parser("delivery-decision", help="Create a Delivery Agent decision report for staged output")
+    delivery_decision_parser.add_argument("delivery_dir", type=Path)
+    delivery_decision_parser.add_argument("project", type=Path)
+    delivery_decision_parser.add_argument("--markdown-output", type=Path)
+    delivery_decision_parser.add_argument("--output", type=Path)
     return parser
 
 
@@ -476,12 +608,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "inspect":
             result = inspect_project(args.project)
             return _emit_json(result, args.output)
+        if args.command == "sessions":
+            return _emit_json(load_session_index(args.project), args.output)
         if args.command == "preflight":
             result = initialize_project(
                 args.project,
                 args.source_locale,
                 args.source_files,
                 args.target_locales,
+                args.operating_mode,
+                args.reference_policy,
                 args.workflow_depth,
                 args.preflight_mode,
                 args.privacy_mode,
@@ -684,7 +820,14 @@ def main(argv: list[str] | None = None) -> int:
             _emit_json(result, args.output)
             return 0 if result["status"] == "pass" else 1
         if args.command == "plan":
-            result = create_batch_plan(read_jsonl(args.segments), args.source_locale, args.target_locales, args.max_segments)
+            result = create_batch_plan(
+                read_jsonl(args.segments),
+                args.source_locale,
+                args.target_locales,
+                args.max_segments,
+                args.operating_mode,
+                args.reference_policy,
+            )
             return _emit_json(result, args.output)
         if args.command == "retrieve":
             result = build_work_packet(
@@ -737,6 +880,46 @@ def main(argv: list[str] | None = None) -> int:
             result = collect_generated_handoff(read_json(args.handoff), args.generated_output)
             _emit_json(result, args.output)
             return 0 if result["status"] in {"pass", "pass_with_warnings"} else 1
+        if args.command == "retry-handoff":
+            return _emit_json(create_retry_handoff(read_json(args.handoff), read_json(args.generation_report), args.generated_dir), args.output)
+        if args.command == "provider-generate":
+            headers = {}
+            if args.api_key_env:
+                api_key = os.environ.get(args.api_key_env)
+                if not api_key:
+                    raise ValueError(f"Environment variable is not set: {args.api_key_env}")
+                headers["Authorization"] = f"Bearer {api_key}"
+            result = generate_handoff_with_http_provider(
+                read_json(args.handoff),
+                args.provider_url,
+                args.generated_output,
+                headers,
+                args.timeout_seconds,
+            )
+            _emit_json(result, args.output)
+            return 0 if result["status"] in {"pass", "pass_with_warnings"} else 1
+        if args.command == "generate-chinese-draft":
+            result = generate_chinese_draft_file(
+                args.segments,
+                args.generated_output,
+                args.target_locale,
+                args.provider,
+                args.quality_claim,
+            )
+            _emit_json(result, args.output)
+            return 0 if result["status"] == "pass" else 1
+        if args.command == "deepseek-generate":
+            from .deepseek_provider import generate_deepseek_batch_file
+
+            result = generate_deepseek_batch_file(
+                args.segments,
+                args.generated_output,
+                args.target_locale,
+                args.source_locale,
+                args.model,
+            )
+            _emit_json(result, args.output)
+            return 0 if result["status"] == "pass" else 1
         if args.command == "stage-generated":
             return _emit_json(
                 stage_generated(
@@ -768,9 +951,67 @@ def main(argv: list[str] | None = None) -> int:
                 args.privacy_mode,
                 args.data_classification,
                 args.status,
+                args.operating_mode,
+                args.reference_policy,
             )
             _emit_json(result, args.output)
             return 1 if result["status"] == "generation_failed" else 0
+        if args.command == "agent-run":
+            provider_headers = {}
+            if args.api_key_env:
+                api_key = os.environ.get(args.api_key_env)
+                if not api_key:
+                    raise ValueError(f"Environment variable is not set: {args.api_key_env}")
+                provider_headers["Authorization"] = f"Bearer {api_key}"
+            result = run_agent(
+                args.project,
+                args.target_locale,
+                args.source_locale,
+                args.source_files,
+                args.output_root,
+                args.run_id,
+                args.max_segments,
+                args.limit_tokens,
+                args.responses_dir,
+                args.generated_dir,
+                args.generated,
+                args.synthetic_draft,
+                args.provider_url,
+                provider_headers,
+                args.provider_timeout_seconds,
+                args.delivery_run_id,
+                args.workflow_depth,
+                args.preflight_mode,
+                args.privacy_mode,
+                args.data_classification,
+                args.status,
+                args.operating_mode,
+                args.reference_policy,
+            )
+            _emit_json(result, args.output)
+            return 1 if result["status"] in {"response_import_failed", "generation_failed"} else 0
+        if args.command == "android-app-test":
+            result = run_android_app_test(
+                args.project,
+                args.source_file,
+                args.target_locale,
+                args.source_locale,
+                args.output_root,
+                args.run_id,
+                args.max_segments,
+                args.limit_tokens,
+                args.generated_dir,
+                args.generated,
+                args.local_chinese_draft,
+                args.require_real_generation,
+            )
+            _emit_json(result, args.output)
+            return 0 if result["status"] == "pass" else 1
+        if args.command == "ui":
+            from .ui import serve_ui
+
+            serve_ui(args.host, args.port, args.open)
+            return 0
         if args.command == "diff-segments":
             result = diff_segments(read_jsonl(args.previous), read_jsonl(args.current))
             return _emit_json(result, args.output)
@@ -792,6 +1033,27 @@ def main(argv: list[str] | None = None) -> int:
             return _emit_json(result, args.output)
         if args.command == "review-sheet":
             return _emit_json(write_review_sheet(read_jsonl(args.generated), args.markdown_output, args.csv_output), args.output)
+        if args.command == "llm-review-request":
+            deterministic_findings = read_json(args.deterministic_report).get("items", []) if args.deterministic_report else []
+            result = create_llm_review_request(
+                read_jsonl(args.generated),
+                args.source_locale,
+                args.target_locale,
+                deterministic_findings,
+                args.run_id,
+                args.max_segments,
+            )
+            if args.prompt_output:
+                args.prompt_output.parent.mkdir(parents=True, exist_ok=True)
+                args.prompt_output.write_text(render_llm_review_prompt(result), encoding="utf-8", newline="\n")
+            return _emit_json(result, args.output)
+        if args.command == "import-llm-review":
+            result = import_llm_review_response(
+                read_json(args.request),
+                args.response.read_text(encoding="utf-8"),
+                args.review_output,
+            )
+            return _emit_json(result, args.output)
         if args.command == "sign-off":
             scope = {
                 "locales": args.locales,
@@ -817,6 +1079,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.markdown_output:
                 args.markdown_output.parent.mkdir(parents=True, exist_ok=True)
                 args.markdown_output.write_text(render_dashboard_markdown(result), encoding="utf-8", newline="\n")
+            return _emit_json(result, args.output)
+        if args.command == "delivery-decision":
+            result = create_delivery_decision_report(args.delivery_dir, args.project)
+            if args.markdown_output:
+                args.markdown_output.parent.mkdir(parents=True, exist_ok=True)
+                args.markdown_output.write_text(render_delivery_decision_markdown(result), encoding="utf-8", newline="\n")
             return _emit_json(result, args.output)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -185,11 +185,13 @@ def rebuild(
                     if plural_field:
                         replacements.append((plural_field.end, plural_field.end, rendered))
             elif 0 in plural_values:
-                field = next((item for item in msgstr_fields if item.plural_index == 0), None)
-                if field:
-                    replacements.append(
-                        (field.start, field.end, [_render_field("msgstr[0]", plural_values[0], document.newline)])
-                    )
+                rendered = [_render_field("msgstr[0]", plural_values[0], document.newline)]
+                if msgstr_fields:
+                    replacements.append((msgstr_fields[0].start, msgstr_fields[-1].end, rendered))
+                else:
+                    plural_field = entry.field("msgid_plural")
+                    if plural_field:
+                        replacements.append((plural_field.end, plural_field.end, rendered))
         elif "target" in segment:
             if not msgstr_fields:
                 msgid_field = entry.field("msgid")

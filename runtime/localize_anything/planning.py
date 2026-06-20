@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from . import PROTOCOL_VERSION
+from .modes import resolve_mode_policy
 
 
 def estimate_tokens(text: str) -> int:
@@ -15,10 +16,16 @@ def estimate_tokens(text: str) -> int:
 
 
 def create_batch_plan(
-    segments: list[dict[str, Any]], source_locale: str, target_locales: list[str], max_segments: int = 80
+    segments: list[dict[str, Any]],
+    source_locale: str,
+    target_locales: list[str],
+    max_segments: int = 80,
+    operating_mode: str | None = None,
+    reference_policy: str | None = None,
 ) -> dict[str, Any]:
     if max_segments < 1:
         raise ValueError("max_segments must be positive")
+    operating_mode, reference_policy = resolve_mode_policy(operating_mode, reference_policy)
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for segment in segments:
         groups[_content_unit(segment)].append(segment)
@@ -50,6 +57,8 @@ def create_batch_plan(
         "plan_id": hashlib.sha256(digest_input).hexdigest()[:16],
         "source_locale": source_locale,
         "target_locales": target_locales,
+        "operating_mode": operating_mode,
+        "reference_policy": reference_policy,
         "strategy": "content_unit_then_adapter_constraints",
         "batches": batches,
     }

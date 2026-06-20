@@ -94,6 +94,8 @@ def package_delivery(
                 "source_locale": config["source_locale"],
                 "target_locales": config["target_locales"],
                 "mode": "standard_project",
+                "operating_mode": config.get("operating_mode", "greenfield_localization"),
+                "reference_policy": config.get("reference_policy", "style_only"),
             },
             "source_material": current.get("source_material", []),
             "unprocessed_non_text_assets": unprocessed_assets,

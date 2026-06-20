@@ -3,6 +3,8 @@
   "plan_id": "example-plan-001",
   "source_locale": "en-US",
   "target_locales": ["zh-CN"],
+  "operating_mode": "greenfield_localization",
+  "reference_policy": "style_only",
   "strategy": "content_unit_then_adapter_constraints",
   "batches": [
     {

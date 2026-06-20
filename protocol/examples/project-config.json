@@ -3,6 +3,8 @@
   "source_locale": "en-US",
   "source_files": ["locales/en-US.json"],
   "target_locales": ["zh-CN"],
+  "operating_mode": "greenfield_localization",
+  "reference_policy": "style_only",
   "delivery_mode": "bundle",
   "preflight_mode": "auto",
   "workflow_depth": "ask",
