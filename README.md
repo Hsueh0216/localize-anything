@@ -180,6 +180,18 @@ Slient overwrite is never allowed.
 **Fixture**: synthetic Android project (12 source segments, 10 existing zh-CN translations).
 Runner: `benchmarks/v021-mode-system/run.py`.
 
+### v0.2.2 Android resource reliability
+
+Localize Anything v0.2.2 extends Android string-resource handling with
+deterministic support for placeholders, escaped percent, inline markup
+(`<b>`, `<i>`, `<u>`, `<a href>`), CDATA boundaries, XML comment round-trip,
+string-array and plural resource types, source-set and resource-qualifier
+routing, maintenance-mode preservation, and deterministic review-risk
+classification metadata.
+
+See [Android Support in v0.2.2](docs/android-v0.2.2-support.md) for the
+current support boundary, known limitations, and explicit non-goals.
+
 ### AntennaPod DeepSeek Translation Test
 
 <p align="center">
