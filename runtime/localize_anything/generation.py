@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from . import PROTOCOL_VERSION
+from .android_strings_adapter import validate_escape_signatures, validate_markup_signatures
 from .io_utils import read_json, read_jsonl, write_jsonl
 from .json_adapter import extract_placeholders
 
@@ -39,6 +40,8 @@ def create_draft_request(work_packet: dict[str, Any]) -> dict[str, Any]:
         "Set target to the translated draft text.",
         "Set status to generated.",
         "Preserve placeholders exactly as listed in constraints.placeholders.",
+        "Preserve Android escape signatures exactly when constraints.escape_signature is present.",
+        "Preserve Android inline markup signatures exactly when constraints.markup_signature is present.",
         "Do not invent, drop, reorder, or merge segment records.",
         "If a segment cannot be translated safely, preserve the source as target and add a generation.warning field.",
         "If the host agent captures a non-JSONL response, normalize it with import-generated-response before collect-generated.",
@@ -265,6 +268,10 @@ def validate_generated_segments(work_packet: dict[str, Any], generated_segments:
                     segment_id,
                 )
             )
+        for issue in _escape_validation_items(source, target):
+            items.append(_qa_item(str(issue["category"]), str(issue["severity"]), str(issue["message"]), segment_id))
+        for issue in _markup_validation_items(source, target):
+            items.append(_qa_item(str(issue["category"]), str(issue["severity"]), str(issue["message"]), segment_id))
         if "generation" not in candidate:
             items.append(_qa_item("generation_metadata", "warning", f"Generated segment lacks generation metadata: {segment_id}", segment_id))
 
@@ -609,6 +616,25 @@ def _duplicates(values: list[str]) -> list[str]:
             duplicates.add(value)
         seen.add(value)
     return sorted(duplicates)
+
+
+def _escape_validation_items(source: dict[str, Any], target: str) -> list[dict[str, Any]]:
+    constraints = source.get("constraints", {})
+    if not isinstance(constraints, dict) or not constraints.get("escape_signature"):
+        return []
+    attributes = source.get("context", {}).get("attributes", {})
+    formatted = not (isinstance(attributes, dict) and attributes.get("formatted") == "false")
+    return validate_escape_signatures(str(source.get("source", "")), target, formatted=formatted)
+
+
+def _markup_validation_items(source: dict[str, Any], target: str) -> list[dict[str, Any]]:
+    constraints = source.get("constraints", {})
+    if not isinstance(constraints, dict):
+        return []
+    markup_signature = constraints.get("markup_signature") or constraints.get("markup") or []
+    if not isinstance(markup_signature, list) or not markup_signature:
+        return []
+    return validate_markup_signatures(str(source.get("source", "")), target, markup_signature)
 
 
 def _failed_batch_ids(report: dict[str, Any]) -> list[str]:

@@ -436,6 +436,151 @@ class AndroidStringsAdapterTests(unittest.TestCase):
             self.assertIn("旧版专属译文_不得自动删除", text)
             self.assertEqual(validate_android_strings(source, staged)["status"], "pass_with_warnings")
 
+    def test_android_escape_signature_extraction(self) -> None:
+        source = (
+            REPOSITORY_ROOT
+            / "benchmarks"
+            / "v022-android-resource-reliability"
+            / "fixture"
+            / "app"
+            / "src"
+            / "main"
+            / "res"
+            / "values"
+            / "strings.xml"
+        )
+        segments = extract_android_segments(source, "en-US", "app/src/main/res/values/strings.xml")
+        by_key = {segment["context"]["resource_key"]: segment for segment in segments}
+
+        self.assertEqual(by_key["string:cant_sync"]["constraints"]["escape_signature"], ["\\'", '"'])
+        self.assertEqual(by_key["string:multiline_help"]["constraints"]["escape_signature"], ["\\n", "\\t"])
+        self.assertEqual(by_key["string:delete_files"]["constraints"]["placeholders"], ["%1$d", "%2$d"])
+        self.assertEqual(by_key["string:delete_files"]["constraints"]["escape_signature"], ["%%"])
+        self.assertNotIn("%%", by_key["string:delete_files"]["constraints"]["placeholders"])
+
+    def test_android_escape_drift_validation(self) -> None:
+        source = (
+            REPOSITORY_ROOT
+            / "benchmarks"
+            / "v022-android-resource-reliability"
+            / "fixture"
+            / "app"
+            / "src"
+            / "main"
+            / "res"
+            / "values"
+            / "strings.xml"
+        )
+        segments = extract_android_segments(source, "en-US", "app/src/main/res/values/strings.xml")
+        generated = []
+        for segment in segments:
+            item = dict(segment)
+            item["target_locale"] = "zh-CN"
+            item["target"] = item["source"]
+            item["status"] = "generated"
+            item["generation"] = {"provider": "synthetic"}
+            generated.append(item)
+        work_packet = {"target_locale": "zh-CN", "segments": segments}
+
+        valid = validate_generated_segments(work_packet, generated)
+        self.assertEqual(valid["status"], "pass", valid["items"])
+
+        missing_newline = [dict(segment) for segment in generated]
+        for segment in missing_newline:
+            if segment["context"]["resource_key"] == "string:multiline_help":
+                segment["target"] = "Line one Line two Indented"
+        newline_result = validate_generated_segments(work_packet, missing_newline)
+        self.assertNotEqual(newline_result["status"], "pass")
+        self.assertIn("escape_missing", {item["category"] for item in newline_result["items"]})
+
+        broken_percent = [dict(segment) for segment in generated]
+        for segment in broken_percent:
+            if segment["context"]["resource_key"] == "string:delete_files":
+                segment["target"] = "This will permanently delete %1$d files (%2$d% complete)."
+        percent_result = validate_generated_segments(work_packet, broken_percent)
+        self.assertNotEqual(percent_result["status"], "pass")
+        categories = {item["category"] for item in percent_result["items"]}
+        self.assertTrue({"percent_literal_drift", "malformed_escape"} & categories)
+
+    def test_android_inline_markup_signature_extraction(self) -> None:
+        source = (
+            REPOSITORY_ROOT
+            / "benchmarks"
+            / "v022-android-resource-reliability"
+            / "fixture"
+            / "app"
+            / "src"
+            / "main"
+            / "res"
+            / "values"
+            / "strings.xml"
+        )
+        segments = extract_android_segments(source, "en-US", "app/src/main/res/values/strings.xml")
+        by_key = {segment["context"]["resource_key"]: segment for segment in segments}
+
+        self.assertEqual(by_key["string:learn_more"]["source"], "Tap <b>Learn more</b> to continue.")
+        self.assertEqual(
+            [item["tag"] for item in by_key["string:learn_more"]["constraints"]["markup_signature"]],
+            ["b"],
+        )
+        self.assertEqual(
+            [item["tag"] for item in by_key["string:formatting_example"]["constraints"]["markup_signature"]],
+            ["i", "u"],
+        )
+        self.assertNotIn("string:unsupported_link", by_key)
+
+    def test_android_inline_markup_drift_validation(self) -> None:
+        source = (
+            REPOSITORY_ROOT
+            / "benchmarks"
+            / "v022-android-resource-reliability"
+            / "fixture"
+            / "app"
+            / "src"
+            / "main"
+            / "res"
+            / "values"
+            / "strings.xml"
+        )
+        segments = extract_android_segments(source, "en-US", "app/src/main/res/values/strings.xml")
+        generated = []
+        for segment in segments:
+            item = dict(segment)
+            item["target_locale"] = "zh-CN"
+            item["target"] = item["source"]
+            item["status"] = "generated"
+            item["generation"] = {"provider": "synthetic"}
+            generated.append(item)
+        work_packet = {"target_locale": "zh-CN", "segments": segments}
+
+        valid = validate_generated_segments(work_packet, generated)
+        self.assertEqual(valid["status"], "pass", valid["items"])
+
+        missing_tag = [dict(segment) for segment in generated]
+        for segment in missing_tag:
+            if segment["context"]["resource_key"] == "string:learn_more":
+                segment["target"] = "Tap Learn more to continue."
+        missing_result = validate_generated_segments(work_packet, missing_tag)
+        self.assertNotEqual(missing_result["status"], "pass")
+        self.assertIn("markup_missing", {item["category"] for item in missing_result["items"]})
+
+        broken_pair = [dict(segment) for segment in generated]
+        for segment in broken_pair:
+            if segment["context"]["resource_key"] == "string:learn_more":
+                segment["target"] = "Tap <b>Learn more</i> to continue."
+        broken_result = validate_generated_segments(work_packet, broken_pair)
+        self.assertEqual(broken_result["status"], "fail")
+        self.assertIn("malformed_markup", {item["category"] for item in broken_result["items"]})
+
+        unsupported_tag = [dict(segment) for segment in generated]
+        for segment in unsupported_tag:
+            if segment["context"]["resource_key"] == "string:learn_more":
+                segment["target"] = "Tap <strong>Learn more</strong> to continue."
+        unsupported_result = validate_generated_segments(work_packet, unsupported_tag)
+        self.assertNotEqual(unsupported_result["status"], "pass")
+        categories = {item["category"] for item in unsupported_result["items"]}
+        self.assertTrue({"unsupported_markup", "markup_missing"} <= categories)
+
     def test_placeholder_mismatch_fails_android_strings(self) -> None:
         source = ANDROID_FIXTURE_ROOT / "app" / "src" / "main" / "res" / "values" / "strings.xml"
         segments = extract_android_segments(source, "en-US", "app/src/main/res/values/strings.xml")
@@ -2228,6 +2373,78 @@ class V021ModeSystemBenchmarkTests(unittest.TestCase):
                     self.assertEqual(out["preserved_target_only_count"], 0)
 
 
+class V022AndroidResourceReliabilityTests(unittest.TestCase):
+    def test_v022_android_resource_reliability_fixture_runs(self) -> None:
+        benchmark = _load_v022_android_resource_reliability_benchmark()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = benchmark.run_benchmark(root / "work", root / "report")
+
+            self.assertEqual(report["status"], "partial", report["failed_checks"])
+            self.assertEqual(report["verdict"], "V0.2.2-C ANDROID INLINE MARKUP PROTECTED SPANS: PARTIAL")
+            self.assertTrue((root / "report" / "report.json").is_file())
+            self.assertTrue((root / "report" / "report.md").is_file())
+            self.assertEqual(report["source_segment_count"], 16)
+            self.assertEqual(report["extracted_segment_count"], 16)
+            self.assertEqual(report["generated_segment_count"], 16)
+            self.assertEqual(report["skipped_translatable_false_count"], 1)
+            self.assertTrue(report["blind_leakage_check_result"]["pass"])
+            self.assertTrue(report["maintenance_preservation_check_result"]["pass"])
+            limitation_ids = {item["id"] for item in report["known_limitations"]}
+            self.assertIn("android_inline_markup_attributes_unsupported", limitation_ids)
+            self.assertIn("android_cdata_section_normalized", limitation_ids)
+            self.assertIn("android_resource_comments_not_preserved", limitation_ids)
+            self.assertNotIn("android_escape_drift_qa_not_supported", limitation_ids)
+            self.assertNotIn("android_inline_markup_skipped", limitation_ids)
+
+    def test_v022_android_resource_reliability_preserves_placeholders_and_target_only_keys(self) -> None:
+        benchmark = _load_v022_android_resource_reliability_benchmark()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = benchmark.run_benchmark(root / "work", root / "report")
+
+            self.assertTrue(report["placeholder_check_result"]["pass"])
+            escape = report["escape_signature_check"]
+            self.assertTrue(escape["pass"], escape)
+            self.assertEqual(escape["known_limitations"], [])
+            self.assertIn("\\n", escape["protected_escapes_detected"])
+            self.assertIn("\\t", escape["protected_escapes_detected"])
+            self.assertIn("%%", escape["protected_escapes_detected"])
+            self.assertGreaterEqual(escape["missing_escape_issues"], 1)
+            self.assertGreaterEqual(escape["percent_literal_issues"], 1)
+            self.assertTrue(report["escape_check_result"]["pass"])
+            self.assertTrue(report["xml_entity_check_result"]["pass"])
+            self.assertTrue(report["string_array_check_result"]["pass"])
+            self.assertTrue(report["plurals_check_result"]["pass"])
+            target_only = report["target_only_preservation_check_result"]
+            self.assertTrue(target_only["pass"])
+            self.assertGreater(target_only["preserved_target_only_count"], 0)
+            self.assertIn("string:legacy_removed_key", target_only["preserved_target_only_keys"])
+            maintenance = report["maintenance_preservation_check_result"]
+            self.assertFalse(maintenance["legacy_counted_as_generated"])
+            self.assertIn("string:legacy_removed_key", maintenance["preserved_target_only_keys"])
+
+    def test_v022_android_resource_reliability_inline_markup(self) -> None:
+        benchmark = _load_v022_android_resource_reliability_benchmark()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = benchmark.run_benchmark(root / "work", root / "report")
+
+            inline = report["inline_markup_check"]
+            self.assertTrue(inline["pass"], inline)
+            self.assertEqual(inline["supported_tags"], ["b", "i", "u"])
+            self.assertGreaterEqual(inline["checked_segments"], 2)
+            self.assertGreaterEqual(inline["markup_signature_segments"], 2)
+            self.assertTrue(inline["supported_inline_markup_staged"])
+            self.assertIn("b", inline["protected_tags_detected"])
+            self.assertIn("i", inline["protected_tags_detected"])
+            self.assertIn("u", inline["protected_tags_detected"])
+            self.assertGreaterEqual(inline["missing_markup_issues"], 1)
+            self.assertGreaterEqual(inline["malformed_markup_issues"], 1)
+            self.assertGreaterEqual(inline["unsupported_markup_issues"], 1)
+            self.assertEqual(report["inline_html_check_result"]["status"], "pass")
+
+
 class SkillFilesTests(unittest.TestCase):
     def test_skill_metadata_and_progressive_disclosure_contract(self) -> None:
         skill_root = REPOSITORY_ROOT / "skills" / "localize-anything"
@@ -2278,6 +2495,16 @@ def _http_post_json(host: str, port: int, path: str, payload: dict[str, object])
 def _load_v021_mode_system_benchmark():
     path = REPOSITORY_ROOT / "benchmarks" / "v021-mode-system" / "run.py"
     spec = importlib.util.spec_from_file_location("v021_mode_system_benchmark", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load benchmark module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_v022_android_resource_reliability_benchmark():
+    path = REPOSITORY_ROOT / "benchmarks" / "v022-android-resource-reliability" / "run.py"
+    spec = importlib.util.spec_from_file_location("v022_android_resource_reliability_benchmark", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load benchmark module: {path}")
     module = importlib.util.module_from_spec(spec)

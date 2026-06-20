@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import re
+from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any
 from xml.etree import ElementTree
@@ -11,6 +13,12 @@ from .json_adapter import extract_placeholders, source_hash
 
 
 ANDROID_STRING_TAGS = {"string", "string-array", "plurals"}
+ESCAPE_SIGNATURE_ORDER = ("\\'", '"', "\\n", "\\t", "%%")
+VALID_BACKSLASH_ESCAPES = {"'", '"', "n", "t", "\\", "@", "?"}
+SUPPORTED_INLINE_TAGS = ("b", "i", "u")
+POSITIONAL_FORMAT_RE = re.compile(r"%\d+\$[#0 +\-]*\d*(?:\.\d+)?(?:hh|h|ll|l|L|z|j|t)?[A-Za-z@]")
+FORMAT_RE = re.compile(r"%[#0 +\-]*\d*(?:\.\d+)?(?:hh|h|ll|l|L|z|j|t)?[A-Za-z@]")
+INLINE_TAG_RE = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9:_-]*)([^>]*)>")
 
 
 def extract_segments(path: Path, source_locale: str, source_path: str | None = None) -> list[dict[str, Any]]:
@@ -38,7 +46,7 @@ def rebuild(
             if segment and "target" in segment:
                 attrs = _target_attributes(resource["attributes"])
                 attrs["name"] = resource["name"]
-                lines.append(f"    <string {_format_attributes(attrs)}>{escape(str(segment['target']))}</string>")
+                lines.append(f"    <string {_format_attributes(attrs)}>{_render_segment_value(segment)}</string>")
             index += 1
             continue
 
@@ -52,9 +60,9 @@ def rebuild(
             if not segment or "target" not in segment:
                 continue
             if resource_type == "plurals":
-                rendered_items.append(f"        <item quantity={quoteattr(item['quantity'])}>{escape(str(segment['target']))}</item>")
+                rendered_items.append(f"        <item quantity={quoteattr(item['quantity'])}>{_render_segment_value(segment)}</item>")
             else:
-                rendered_items.append(f"        <item>{escape(str(segment['target']))}</item>")
+                rendered_items.append(f"        <item>{_render_segment_value(segment)}</item>")
         if rendered_items:
             attrs = _target_attributes(resource["attributes"])
             attrs["name"] = resource["name"]
@@ -156,6 +164,8 @@ def validate_pair(source_path: Path, target_path: Path) -> dict[str, Any]:
             )
         if not target_resource["value"]:
             items.append(_qa_item("empty_translation", "warning", f"Empty target resource: {_resource_label(target_resource)}", target_path, key))
+        items.extend(_escape_qa_items(source_resource, target_resource, target_path, key))
+        items.extend(_markup_qa_items(source_resource, target_resource, target_path, key))
 
     blocking = sum(item["severity"] == "blocking" for item in items)
     warnings = sum(item["severity"] == "warning" for item in items)
@@ -241,7 +251,19 @@ def _read_document(path: Path) -> dict[str, Any]:
             continue
         if tag == "string":
             if list(element):
-                skipped.append({"tag": tag, "name": _container_key(tag, name), "reason": "inline_markup"})
+                inline = _extract_supported_inline_markup(element)
+                if inline is None:
+                    skipped.append({"tag": tag, "name": _container_key(tag, name), "reason": "unsupported_inline_markup"})
+                    continue
+                resources.append(
+                    _resource(
+                        "string",
+                        name,
+                        inline["value"],
+                        dict(element.attrib),
+                        markup_signature=inline["markup_signature"],
+                    )
+                )
                 continue
             resources.append(_resource("string", name, element.text or "", dict(element.attrib)))
             continue
@@ -271,6 +293,8 @@ def _segment(logical_path: str, locale: str, resource: dict[str, Any]) -> dict[s
     key = resource["key"]
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
     value = resource["value"]
+    escape_signature = extract_escape_signature(value)
+    markup_signature = list(resource.get("markup_signature", []))
     return {
         "protocol_version": PROTOCOL_VERSION,
         "evidence_channels": ["adapter"],
@@ -289,7 +313,14 @@ def _segment(logical_path: str, locale: str, resource: dict[str, Any]) -> dict[s
             "quantity": resource.get("quantity"),
             "attributes": _target_attributes(resource["attributes"]),
         },
-        "constraints": {"placeholders": _resource_placeholders(resource), "markup": []},
+        "constraints": {
+            "placeholders": _resource_placeholders(resource),
+            "markup": markup_signature,
+            "markup_signature": markup_signature,
+            "escape_signature": escape_signature,
+        },
+        "escape_signature": escape_signature,
+        "markup_signature": markup_signature,
         "status": "new",
     }
 
@@ -313,8 +344,41 @@ def _target_only_resources(source_resources: list[dict[str, Any]], target_path: 
     if target_path is None or not target_path.is_file():
         return []
     source_keys = {resource["key"] for resource in source_resources}
-    target = _read_document(target_path)
-    return [resource for resource in target["resources"] if resource["key"] not in source_keys]
+    return [resource for resource in _read_preservable_target_resources(target_path) if resource["key"] not in source_keys]
+
+
+def _read_preservable_target_resources(path: Path) -> list[dict[str, Any]]:
+    tree = ElementTree.parse(path)
+    root = tree.getroot()
+    if _tag(root.tag) != "resources":
+        raise ValueError(f"Android strings file must have a <resources> root: {path}")
+    resources: list[dict[str, Any]] = []
+    for element in list(root):
+        tag = _tag(element.tag)
+        if tag not in ANDROID_STRING_TAGS:
+            continue
+        name = element.attrib.get("name", "")
+        if not name:
+            continue
+        if tag == "string":
+            if list(element):
+                continue
+            resources.append(_resource("string", name, element.text or "", dict(element.attrib)))
+            continue
+        item_index = 0
+        for child in list(element):
+            child_tag = _tag(child.tag)
+            if child_tag != "item" or list(child):
+                item_index += 1
+                continue
+            if tag == "plurals":
+                quantity = child.attrib.get("quantity", "")
+                if quantity:
+                    resources.append(_resource("plurals", name, child.text or "", dict(element.attrib), item_index, quantity))
+            else:
+                resources.append(_resource("string-array", name, child.text or "", dict(element.attrib), item_index))
+            item_index += 1
+    return resources
 
 
 def _render_existing_resources(resources: list[dict[str, Any]]) -> list[str]:
@@ -356,6 +420,7 @@ def _resource(
     attributes: dict[str, str],
     item_index: int | None = None,
     quantity: str | None = None,
+    markup_signature: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "type": resource_type,
@@ -364,6 +429,7 @@ def _resource(
         "attributes": attributes,
         "item_index": item_index,
         "quantity": quantity,
+        "markup_signature": markup_signature or [],
         "key": _item_key(resource_type, name, item_index, quantity),
     }
 
@@ -374,8 +440,354 @@ def _resource_placeholders(resource: dict[str, Any]) -> list[str]:
     return extract_placeholders(str(resource.get("value", "")))
 
 
+def _extract_supported_inline_markup(element: ElementTree.Element) -> dict[str, Any] | None:
+    pieces: list[str] = [element.text or ""]
+    signature: list[dict[str, Any]] = []
+    for child in list(element):
+        tag = _tag(child.tag)
+        if tag not in SUPPORTED_INLINE_TAGS or child.attrib or list(child):
+            return None
+        index = len(signature)
+        signature.append(
+            {
+                "type": "markup_tag",
+                "tag": tag,
+                "kind": "pair",
+                "index": index,
+                "open": f"<{tag}>",
+                "close": f"</{tag}>",
+            }
+        )
+        pieces.append(f"<{tag}>")
+        pieces.append(child.text or "")
+        pieces.append(f"</{tag}>")
+        pieces.append(child.tail or "")
+    return {"value": "".join(pieces), "markup_signature": signature}
+
+
+def _render_segment_value(segment: dict[str, Any]) -> str:
+    value = str(segment["target"])
+    constraints = segment.get("constraints", {})
+    if isinstance(constraints, dict) and constraints.get("markup_signature"):
+        return _render_inline_markup_value(value)
+    return escape(value)
+
+
+def _render_inline_markup_value(value: str) -> str:
+    rendered: list[str] = []
+    position = 0
+    for match in INLINE_TAG_RE.finditer(value):
+        rendered.append(escape(value[position : match.start()]))
+        slash, tag, suffix = match.groups()
+        token = match.group(0)
+        if tag in SUPPORTED_INLINE_TAGS and suffix == "" and token in {f"<{tag}>", f"</{tag}>"}:
+            rendered.append(token)
+        else:
+            rendered.append(escape(token))
+        position = match.end()
+    rendered.append(escape(value[position:]))
+    return "".join(rendered)
+
+
+def extract_escape_signature(text: str) -> list[str]:
+    counts = _escape_signature_counts(text)
+    return [token for token in ESCAPE_SIGNATURE_ORDER if counts.get(token, 0) > 0]
+
+
+def validate_escape_signatures(
+    source_text: str,
+    target_text: str,
+    *,
+    formatted: bool = True,
+) -> list[dict[str, Any]]:
+    source_counts = _escape_signature_counts(source_text)
+    target_counts = _escape_signature_counts(target_text)
+    issues: list[dict[str, Any]] = []
+    for token in ESCAPE_SIGNATURE_ORDER:
+        expected = source_counts.get(token, 0)
+        if expected <= 0:
+            continue
+        actual = target_counts.get(token, 0)
+        if actual >= expected:
+            continue
+        if token == "%%":
+            issues.append(
+                {
+                    "category": "percent_literal_drift",
+                    "severity": "warning",
+                    "message": f"Target dropped literal percent escape {token}: expected at least {expected}, actual {actual}",
+                    "token": token,
+                    "expected": expected,
+                    "actual": actual,
+                }
+            )
+        else:
+            issues.append(
+                {
+                    "category": "escape_missing",
+                    "severity": "warning",
+                    "message": f"Target dropped protected Android escape {token}: expected at least {expected}, actual {actual}",
+                    "token": token,
+                    "expected": expected,
+                    "actual": actual,
+                }
+            )
+    for malformed in _malformed_backslash_escapes(target_text):
+        issues.append(
+            {
+                "category": "malformed_escape",
+                "severity": "blocking",
+                "message": f"Target contains malformed Android escape sequence: {malformed}",
+                "token": malformed,
+            }
+        )
+    if formatted:
+        for malformed in _malformed_percent_sequences(target_text):
+            issues.append(
+                {
+                    "category": "malformed_escape",
+                    "severity": "blocking",
+                    "message": f"Target contains malformed Android percent sequence: {malformed}",
+                    "token": malformed,
+                }
+            )
+    return issues
+
+
+def validate_markup_signatures(
+    source_text: str,
+    target_text: str,
+    markup_signature: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not markup_signature:
+        return []
+    expected_tags = [str(item.get("tag")) for item in markup_signature if item.get("kind") == "pair"]
+    expected_counts = Counter(expected_tags)
+    target = _analyze_inline_markup(target_text)
+    issues: list[dict[str, Any]] = []
+    for token in target["unsupported_tokens"]:
+        issues.append(
+            {
+                "category": "unsupported_markup",
+                "severity": "warning",
+                "message": f"Target contains unsupported Android inline markup: {token}",
+                "token": token,
+            }
+        )
+    for token in target["malformed_tokens"]:
+        issues.append(
+            {
+                "category": "malformed_markup",
+                "severity": "blocking",
+                "message": f"Target contains malformed Android inline markup: {token}",
+                "token": token,
+            }
+        )
+    missing = False
+    for tag in SUPPORTED_INLINE_TAGS:
+        expected = expected_counts.get(tag, 0)
+        if expected <= 0:
+            continue
+        actual = target["pair_counts"].get(tag, 0)
+        if actual >= expected:
+            continue
+        missing = True
+        issues.append(
+            {
+                "category": "markup_missing",
+                "severity": "warning",
+                "message": f"Target dropped required Android inline <{tag}> pair: expected at least {expected}, actual {actual}",
+                "tag": tag,
+                "expected": expected,
+                "actual": actual,
+            }
+        )
+    if not missing and not target["malformed_tokens"] and target["open_sequence"] != expected_tags:
+        issues.append(
+            {
+                "category": "markup_order_drift",
+                "severity": "warning",
+                "message": f"Target changed Android inline markup order: expected={expected_tags}, actual={target['open_sequence']}",
+                "expected": expected_tags,
+                "actual": target["open_sequence"],
+            }
+        )
+    return issues
+
+
+def _escape_qa_items(
+    source_resource: dict[str, Any],
+    target_resource: dict[str, Any],
+    target_path: Path,
+    segment_id: str,
+) -> list[dict[str, Any]]:
+    formatted = source_resource.get("attributes", {}).get("formatted") != "false"
+    items: list[dict[str, Any]] = []
+    for issue in validate_escape_signatures(str(source_resource.get("value", "")), str(target_resource.get("value", "")), formatted=formatted):
+        items.append(
+            _qa_item(
+                str(issue["category"]),
+                str(issue["severity"]),
+                str(issue["message"]),
+                target_path,
+                segment_id,
+            )
+        )
+    return items
+
+
+def _markup_qa_items(
+    source_resource: dict[str, Any],
+    target_resource: dict[str, Any],
+    target_path: Path,
+    segment_id: str,
+) -> list[dict[str, Any]]:
+    markup_signature = source_resource.get("markup_signature", [])
+    if not markup_signature:
+        return []
+    items: list[dict[str, Any]] = []
+    for issue in validate_markup_signatures(
+        str(source_resource.get("value", "")),
+        str(target_resource.get("value", "")),
+        markup_signature,
+    ):
+        items.append(
+            _qa_item(
+                str(issue["category"]),
+                str(issue["severity"]),
+                str(issue["message"]),
+                target_path,
+                segment_id,
+            )
+        )
+    return items
+
+
+def _analyze_inline_markup(text: str) -> dict[str, Any]:
+    unsupported_tokens: list[str] = []
+    malformed_tokens: list[str] = []
+    open_sequence: list[str] = []
+    pair_counts: Counter[str] = Counter()
+    stack: list[str] = []
+    position = 0
+    for match in INLINE_TAG_RE.finditer(text):
+        if _has_unparsed_markup_angle(text[position : match.start()]):
+            malformed_tokens.append(text[position : match.start()])
+        slash, tag, suffix = match.groups()
+        token = match.group(0)
+        if tag not in SUPPORTED_INLINE_TAGS or suffix != "" or token not in {f"<{tag}>", f"</{tag}>"}:
+            unsupported_tokens.append(token)
+            position = match.end()
+            continue
+        if slash == "":
+            stack.append(tag)
+            open_sequence.append(tag)
+        else:
+            if not stack or stack[-1] != tag:
+                malformed_tokens.append(token)
+            else:
+                stack.pop()
+                pair_counts[tag] += 1
+        position = match.end()
+    if _has_unparsed_markup_angle(text[position:]):
+        malformed_tokens.append(text[position:])
+    malformed_tokens.extend(f"<{tag}>" for tag in reversed(stack))
+    return {
+        "unsupported_tokens": unsupported_tokens,
+        "malformed_tokens": malformed_tokens,
+        "open_sequence": open_sequence,
+        "pair_counts": pair_counts,
+    }
+
+
+def _has_unparsed_markup_angle(text: str) -> bool:
+    return "<" in text or ">" in text
+
+
+def _escape_signature_counts(text: str) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    index = 0
+    while index < len(text):
+        char = text[index]
+        nxt = text[index + 1] if index + 1 < len(text) else ""
+        if char == "%" and nxt == "%":
+            counts["%%"] += 1
+            index += 2
+            continue
+        if char == "\\" and nxt:
+            if nxt == "'":
+                counts["\\'"] += 1
+                index += 2
+                continue
+            if nxt == '"':
+                counts['"'] += 1
+                index += 2
+                continue
+            if nxt == "n":
+                counts["\\n"] += 1
+                index += 2
+                continue
+            if nxt == "t":
+                counts["\\t"] += 1
+                index += 2
+                continue
+        if char == '"':
+            counts['"'] += 1
+        index += 1
+    return counts
+
+
+def _malformed_backslash_escapes(text: str) -> list[str]:
+    malformed: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] != "\\":
+            index += 1
+            continue
+        if index + 1 >= len(text):
+            malformed.append("\\")
+            break
+        nxt = text[index + 1]
+        if nxt in VALID_BACKSLASH_ESCAPES:
+            index += 2
+            continue
+        if nxt == "u" and index + 5 < len(text) and all(char in "0123456789abcdefABCDEF" for char in text[index + 2 : index + 6]):
+            index += 6
+            continue
+        malformed.append(text[index : index + 2])
+        index += 2
+    return malformed
+
+
+def _malformed_percent_sequences(text: str) -> list[str]:
+    malformed: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] != "%":
+            index += 1
+            continue
+        if text.startswith("%%", index):
+            index += 2
+            continue
+        match = _format_placeholder_end(text, index)
+        if match > index:
+            index = match
+            continue
+        malformed.append(text[index : index + 2] if index + 1 < len(text) else "%")
+        index += 1
+    return malformed
+
+
+def _format_placeholder_end(text: str, index: int) -> int:
+    match = POSITIONAL_FORMAT_RE.match(text, index)
+    if match:
+        return match.end()
+    match = FORMAT_RE.match(text, index)
+    return match.end() if match else index
+
+
 def _target_attributes(attributes: dict[str, str]) -> dict[str, str]:
-    return {key: value for key, value in attributes.items() if key in {"formatted", "product"}}
+    return {key: value for key, value in attributes.items() if key in {"formatted", "product", "translatable"}}
 
 
 def _format_attributes(attributes: dict[str, str]) -> str:
