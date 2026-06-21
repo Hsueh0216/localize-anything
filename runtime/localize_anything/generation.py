@@ -650,8 +650,12 @@ def _markup_validation_items(source: dict[str, Any], target: str) -> list[dict[s
     constraints = source.get("constraints", {})
     if not isinstance(constraints, dict):
         return []
-    markup_signature = constraints.get("markup_signature") or constraints.get("markup") or []
-    if not isinstance(markup_signature, list) or not markup_signature:
+    markup_signature = constraints.get("markup_signature") or []
+    if (
+        not isinstance(markup_signature, list)
+        or not markup_signature
+        or not all(isinstance(item, dict) for item in markup_signature)
+    ):
         return []
     return validate_markup_signatures(str(source.get("source", "")), target, markup_signature)
 
