@@ -12,8 +12,8 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
-  <img src="https://github.com/Hsueh0216/localize-anything/actions/workflows/ci.yml/badge.svg" alt="CI">
-  <a href="https://github.com/Hsueh0216/localize-anything/releases/tag/v0.2.4"><img src="https://img.shields.io/badge/release-v0.2.4-blue" alt="Release: v0.2.4"></a>
+  <img src="https://github.com/xueyang-dev/localize-anything/actions/workflows/ci.yml/badge.svg" alt="CI">
+  <a href="https://github.com/xueyang-dev/localize-anything/releases/tag/v0.2.4"><img src="https://img.shields.io/badge/release-v0.2.4-blue" alt="Release: v0.2.4"></a>
   <img src="https://img.shields.io/badge/QA-deterministic-green" alt="QA: deterministic">
   <img src="https://img.shields.io/badge/apply-staged%20first-blueviolet" alt="Apply: staged first">
 </p>
@@ -27,7 +27,7 @@ after explicit run-id confirmation.
 
 ## Status
 
-**Current release:** [v0.2.4 — Release Hygiene and CI Benchmark Coverage](https://github.com/Hsueh0216/localize-anything/releases/tag/v0.2.4)
+**Current release:** [v0.2.4 — Release Hygiene and CI Benchmark Coverage](https://github.com/xueyang-dev/localize-anything/releases/tag/v0.2.4)
 
 v0.2.4 adds release hygiene and runs the full regression benchmark suite in CI
 on Python 3.11 and 3.12. It does not add localization features; the current
@@ -90,7 +90,7 @@ See [Security](docs/security.md) for the complete safety architecture.
 ### From source
 
 ```bash
-git clone https://github.com/Hsueh0216/localize-anything.git
+git clone https://github.com/xueyang-dev/localize-anything.git
 cd localize-anything
 python3 -m venv .venv
 source .venv/bin/activate

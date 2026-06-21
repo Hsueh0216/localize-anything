@@ -12,8 +12,8 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
-  <img src="https://github.com/Hsueh0216/localize-anything/actions/workflows/ci.yml/badge.svg" alt="CI">
-  <a href="https://github.com/Hsueh0216/localize-anything/releases/tag/v0.2.4"><img src="https://img.shields.io/badge/release-v0.2.4-blue" alt="Release: v0.2.4"></a>
+  <img src="https://github.com/xueyang-dev/localize-anything/actions/workflows/ci.yml/badge.svg" alt="CI">
+  <a href="https://github.com/xueyang-dev/localize-anything/releases/tag/v0.2.4"><img src="https://img.shields.io/badge/release-v0.2.4-blue" alt="Release: v0.2.4"></a>
   <img src="https://img.shields.io/badge/QA-deterministic-green" alt="QA: deterministic">
   <img src="https://img.shields.io/badge/apply-staged%20first-blueviolet" alt="Apply: staged first">
 </p>
@@ -25,7 +25,7 @@ Localize Anything 是面向真实源码项目开发者与本地化团队的智�
 
 ## 当前状态
 
-**当前发布版：** [v0.2.4 — Release Hygiene and CI Benchmark Coverage](https://github.com/Hsueh0216/localize-anything/releases/tag/v0.2.4)
+**当前发布版：** [v0.2.4 — Release Hygiene and CI Benchmark Coverage](https://github.com/xueyang-dev/localize-anything/releases/tag/v0.2.4)
 
 v0.2.4 改进发布卫生，并在 Python 3.11 与 3.12 的 CI 中运行完整回归基准套件；
 它没有新增本地化功能。当前 Android 能力边界仍由 v0.2.3 可靠性版本定义。
@@ -84,7 +84,7 @@ Runtime 负责确定性工作，智能体与服务商负责语义工作。
 ### 从源码安装
 
 ```bash
-git clone https://github.com/Hsueh0216/localize-anything.git
+git clone https://github.com/xueyang-dev/localize-anything.git
 cd localize-anything
 python3 -m venv .venv
 source .venv/bin/activate
