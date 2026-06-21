@@ -1,5 +1,9 @@
 # Android Support in v0.2.2
 
+> **Superseded:** the public `v0.2.2` tag is retained for history but was not
+> published as a GitHub Release. Use the corrected
+> [Android Support in v0.2.3](android-v0.2.3-support.md) boundary.
+
 Localize Anything v0.2.2 provides deterministic Android string-resource handling
 for extraction, structural QA, maintenance-mode preservation, and review-risk
 metadata. The reference runtime does not perform translation; all semantic work
@@ -65,9 +69,9 @@ and the segment is flagged `owner_review_required`.
 v0.2.2 includes deterministic review-priority metadata in the
 `ui_risk_classification` field of every extracted Android segment.
 
-The classifier uses resource name, source text, XML comments, resource type,
-and existing structural metadata (supported/unsupported markup, CDATA,
-placeholders) to assign:
+The classifier uses deterministic resource-name and source-text patterns. It
+also records structural evidence only when the adapter reports actual protected
+structure, such as placeholders, escapes, markup, CDATA, or unsupported markup.
 
 - `ui_role` — one or more of `destructive_action`, `auth`, `privacy`,
   `permission`, `legal`, `payment`, `error`, `warning`, `button`, `title`,
