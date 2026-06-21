@@ -5,6 +5,7 @@
 ### Changed
 
 - Improve release hygiene, README clarity, and CI benchmark coverage.
+- Synchronize package/runtime version metadata with the public v0.2.4 release line.
 
 ## v0.2.3 — Android Resource Reliability Fixes
 
