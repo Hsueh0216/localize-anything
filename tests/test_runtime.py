@@ -6,6 +6,8 @@ import http.client
 import importlib.util
 import io
 import contextlib
+import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -14,6 +16,7 @@ import unittest
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 from xml.etree import ElementTree
 
 from runtime.localize_anything.acceptance import create_acceptance
@@ -30,6 +33,7 @@ from runtime.localize_anything.contracts import validate_adapter_tree
 from runtime.localize_anything.dashboard import build_delivery_dashboard, render_dashboard_markdown
 from runtime.localize_anything.delivery import package_delivery
 from runtime.localize_anything.delivery_decision import create_delivery_decision_report, render_delivery_decision_markdown
+from runtime.localize_anything.deepseek_provider import _get_api_key
 from runtime.localize_anything.generation import (
     collect_generated_handoff,
     create_draft_request,
@@ -2310,6 +2314,55 @@ class ProviderGenerationTests(unittest.TestCase):
             generated = read_jsonl(root / "generated.jsonl")
             self.assertEqual(len(generated), len(segments))
             self.assertEqual(generated[0]["generation"]["imported_from"], "llm_response")
+
+
+class ProviderPathHygieneTests(unittest.TestCase):
+    def test_runtime_code_does_not_contain_private_local_paths(self) -> None:
+        patterns = [
+            "/mnt/c/Users/",
+            "C:\\Users\\",
+            "/Users/",
+            ".env.reasonix",
+        ]
+        home_documents = re.compile(r"/home/[^/]+/Documents/")
+        violations: list[tuple[str, str]] = []
+        for path in (REPOSITORY_ROOT / "runtime").rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for pattern in patterns:
+                if pattern in text:
+                    violations.append((path.relative_to(REPOSITORY_ROOT).as_posix(), pattern))
+            if home_documents.search(text):
+                violations.append((path.relative_to(REPOSITORY_ROOT).as_posix(), "/home/<name>/Documents/"))
+        self.assertEqual(violations, [])
+
+    def test_deepseek_provider_does_not_default_to_local_env_file(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "DEEPSEEK_API_KEY not found"):
+                _get_api_key()
+
+    def test_deepseek_missing_credentials_error_has_no_private_path(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            try:
+                _get_api_key()
+            except RuntimeError as exc:
+                message = str(exc)
+            else:  # pragma: no cover - defensive guard
+                self.fail("_get_api_key unexpectedly found credentials")
+        self.assertNotIn("/mnt/c/Users", message)
+        self.assertNotIn("C:\\Users", message)
+        self.assertNotIn("/Users/", message)
+        self.assertNotIn(".env.reasonix", message)
+
+    def test_deepseek_explicit_env_file_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / "deepseek.env"
+            env_file.write_text("DEEPSEEK_API_KEY='test-key'\n", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ,
+                {"LOCALIZE_ANYTHING_DEEPSEEK_ENV_FILE": str(env_file)},
+                clear=True,
+            ):
+                self.assertEqual(_get_api_key(), "test-key")
 
 
 class WorkbenchUITests(unittest.TestCase):
