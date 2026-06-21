@@ -1123,6 +1123,9 @@ def validate_markup_signatures(
 ) -> list[dict[str, Any]]:
     if not markup_signature:
         return []
+    markup_signature = [item for item in markup_signature if isinstance(item, dict)]
+    if not markup_signature:
+        return []
     issues = _validate_inline_attribute_signatures(target_text, markup_signature)
     expected_tags = [str(item.get("tag")) for item in markup_signature if item.get("kind") == "pair"]
     expected_counts = Counter(expected_tags)

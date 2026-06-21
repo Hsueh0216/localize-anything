@@ -732,6 +732,28 @@ class AndroidStringsAdapterTests(unittest.TestCase):
         categories = {item["category"] for item in unsupported_result["items"]}
         self.assertTrue({"unsupported_markup", "markup_missing"} <= categories)
 
+    def test_generic_markup_list_does_not_enter_android_markup_validator(self) -> None:
+        segment = {
+            "segment_id": "generic-markup-001",
+            "source": "Read **more**",
+            "source_hash": "hash-generic-markup",
+            "source_locale": "en-US",
+            "source_path": "docs/example.md",
+            "context": {},
+            "constraints": {"placeholders": [], "markup": ["strong"]},
+        }
+        generated = {
+            **segment,
+            "target_locale": "zh-CN",
+            "target": "Read **more**",
+            "status": "generated",
+            "generation": {"provider": "synthetic"},
+        }
+
+        result = validate_generated_segments({"target_locale": "zh-CN", "segments": [segment]}, [generated])
+
+        self.assertEqual(result["status"], "pass", result["items"])
+
     def test_android_cdata_signature_extraction(self) -> None:
         source = (
             REPOSITORY_ROOT
