@@ -1,8 +1,8 @@
 # Localize Anything
 
 <p align="center">
-  <strong>An agent-native localization framework for real source projects.</strong><br>
-  <em>Safely extract, translate, review, and apply localized resources.</em>
+  <strong>Agent-native localization infrastructure for real source projects.</strong><br>
+  <em>LLMs can translate strings. Localize Anything makes localization deliverable.</em>
 </p>
 
 <p align="center">
@@ -13,228 +13,257 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
   <img src="https://github.com/Hsueh0216/localize-anything/actions/workflows/ci.yml/badge.svg" alt="CI">
-  <img src="https://img.shields.io/badge/v0.2.1--benchmark-pass-success" alt="v0.2.1 benchmark: pass">
+  <a href="https://github.com/Hsueh0216/localize-anything/releases/tag/v0.2.4"><img src="https://img.shields.io/badge/release-v0.2.4-blue" alt="Release: v0.2.4"></a>
   <img src="https://img.shields.io/badge/QA-deterministic-green" alt="QA: deterministic">
   <img src="https://img.shields.io/badge/apply-staged%20first-blueviolet" alt="Apply: staged first">
 </p>
 
----
+Localize Anything is an agent-native localization framework for developers and
+localization teams working with real source projects. It turns model- or
+human-generated translations into a safe, reviewable, and reproducible delivery
+workflow: extract content, generate drafts through agents or providers, validate
+structure deterministically, stage output, review it, and apply changes only
+after explicit run-id confirmation.
 
-## Why Localize Anything?
+## Status
 
-Localize Anything is an agent-native localization framework for safely extracting,
-translating, reviewing, and applying localized resources. Most localization tools
-focus on _editing translations_; Localize Anything focuses on _delivering them safely_.
+**Current release:** [v0.2.4 — Release Hygiene and CI Benchmark Coverage](https://github.com/Hsueh0216/localize-anything/releases/tag/v0.2.4)
 
-It is not a translation engine. It is the infrastructure layer that sits between
-your source project, an LLM (or human translator), and the final deliverable —
-enforcing protocol, preserving structure, catching regressions, and never silently
-overwriting your source.
+v0.2.4 adds release hygiene and runs the full regression benchmark suite in CI
+on Python 3.11 and 3.12. It does not add localization features; the current
+Android capability boundary remains documented by the v0.2.3 reliability
+release. See the [changelog](CHANGELOG.md) and [release checklist](docs/release-checklist.md).
 
-## What it does
+Verified engineering evidence:
 
-- **Extract** translatable content from real project files
-- **Plan** what to generate vs preserve based on operating mode
-- **Generate** translations via LLM agents, with context and terminology
-- **Stage** output in isolated directories — never touch your source
-- **QA** every segment deterministically for placeholders, markup, format
-- **Review** with human sign-off scoped to specific segments
-- **Apply** only after explicit run-id confirmation, with backups
+- v0.2.4 CI benchmark coverage on Python 3.11 and 3.12: pass
+- v0.2.3 Android resource reliability regressions: pass
+- v0.2.1 mode-system benchmark: pass
+- AntennaPod DeepSeek test: 869 segments in each of 2 locales, 0 deterministic QA issues, both builds successful
 
-## How it works
+These results demonstrate pipeline and structural correctness. They are not a
+claim of native-level translation quality.
+
+## Why this exists
+
+An LLM can produce plausible strings. A real localization delivery must also
+protect placeholders and markup, preserve reviewed work, track evidence, surface
+conflicts, and avoid damaging the source project.
+
+Localize Anything is the missing engineering layer between a source project, an
+LLM or human translator, and the final deliverable. The runtime handles
+deterministic work; agents and providers handle semantic work.
+
+## What Localize Anything does
+
+**Extract → Generate → QA → Stage → Review → Apply**
+
+- Extracts translatable content from real project formats
+- Plans what to generate and what to preserve based on operating mode
+- Generates drafts through host agents or direct providers, with scoped context
+- Validates placeholders, markup, escapes, keys, and file structure programmatically
+- Stages output outside the source project for review
+- Packages manifests, QA evidence, review state, and an apply plan
+- Applies only after explicit run-id confirmation, with backups
 
 <p align="center">
   <img src="docs/assets/workflow-dark.svg" alt="Localize Anything workflow: 9 steps from Project Agent to Apply with Backups" width="900">
 </p>
 
-1. **Project Agent** reads your source and existing translations
-2. **Extraction Runtime** produces stable, hash-keyed segments
-3. **Context Loader** assembles terminology, TM, and reference material
-4. **Generation Agent** produces target-language drafts
-5. **Deterministic QA** validates placeholders, markup, and format compliance
-6. **Staging** writes output to an isolated directory — your source is never touched
-7. **Review Agent** imports human feedback, tracks sign-off per segment
-8. **Delivery Agent** packages evidence, manifests, and apply plans
-9. **Apply** writes files only after explicit run-id confirmation, with backups
+## Core guarantees
 
-## Core concepts
+| Guarantee | Enforcement |
+|-----------|-------------|
+| **Staging first** | Generated files are written to an isolated staging directory, not the source project. |
+| **Deterministic QA** | Placeholder parity, markup integrity, escapes, keys, and format rules are checked in code. |
+| **No silent overwrite** | Conflicts block apply until they are resolved. |
+| **Confirmed apply** | Apply requires a matching `--confirm-run-id`; replaced files are backed up. |
+| **Source mutation detection** | SHA-256 checks detect unexpected changes during a run. |
+| **Maintenance preservation** | Reviewed unchanged translations and Android target-only resources are preserved in verified maintenance workflows. |
+| **Reference isolation** | Blind benchmarks keep existing translations out of generation-facing artifacts. |
+| **Reviewable delivery** | Manifests, QA results, sign-off scope, and file operations remain inspectable. |
 
-| Concept | What it means |
-|---------|--------------|
-| **Protocol-first** | Every artifact has a schema. Every lifecycle step produces evidence. |
-| **Operating modes** | `greenfield_localization`, `existing_locale_maintenance`, `rewrite_or_harmonization`, `blind_benchmark` |
-| **Reference policies** | `blind`, `style_only`, `tm_assisted`, `preserve_existing` |
-| **Staged delivery** | Output is written to a staging directory. Nothing touches your project until apply. |
-| **Deterministic QA** | Placeholder parity, markup integrity, format compliance — checked programmatically, not by LLM. |
-| **Human review** | Segment-level sign-off. Reviewed translations are preserved in maintenance mode. |
-| **Project memory** | Translation memory persists between runs. Reviewed segments survive source changes. |
-
-<p align="center">
-  <img src="docs/assets/architecture-layers.svg" alt="Architecture layers: Protocol → Runtime → Agent → Adapters → Source/Delivery" width="640">
-</p>
+See [Security](docs/security.md) for the complete safety architecture.
 
 ## Quick start
 
+### From source
+
 ```bash
-# Install
-pip install -e ".[yaml]"
-
-# Validate the protocol
-python -m runtime.localize_anything validate-protocol
-python -m runtime.localize_anything validate-contracts
-
-# Run tests
+git clone https://github.com/Hsueh0216/localize-anything.git
+cd localize-anything
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[yaml]"
 python -m unittest discover -s tests -v
+```
 
-# Inspect a project
-python -m runtime.localize_anything inspect /path/to/project
+### Try the regression benchmarks
 
-# Run a full localization pipeline (synthetic drafts, no real LLM)
-python -m runtime.localize_anything localize-run \
-  /path/to/project en-US ja \
-  --source-files app/src/main/res/values/strings.xml \
-  --operating-mode existing_locale_maintenance \
-  --reference-policy preserve_existing \
-  --run-id maintenance-001 \
-  --synthetic-draft
-
-# Run the release regression benchmarks
+```bash
 python benchmarks/v022-android-resource-reliability/run.py
 python benchmarks/v022-android-resource-reliability/source_sets.py
 python benchmarks/v022-android-resource-reliability/risk_classification.py
 python benchmarks/v021-mode-system/run.py
 ```
 
-## Supported formats
+### Inspect a real project
 
-| Area | Adapter | Status | Preserves |
-|------|---------|--------|-----------|
-| Android | `core.android-strings` | stable | strings, string-arrays, plurals, `translatable=false`, target-only keys |
-| iOS | `core.ios-strings` | experimental | key-value pairs, comments |
-| iOS String Catalog | `core.xcstrings` | experimental | structured JSON catalog |
-| JSON locale | `core.json-locale` | stable | nested keys, nested markdown |
-| YAML / TOML | `core.yaml-toml` | stable | inline and block values |
-| CSV / TSV / XLSX | `core.tabular` | stable | column structure, row identity |
-| Markdown / HTML | `core.markup` | stable | tags, attributes, code blocks |
-| SRT / VTT | `core.subtitles` | stable | timing, markup |
-| XLIFF 1.2 / 2.0 | `core.xliff` | stable | segments, notes, alt-trans |
-| GNU gettext | `core.gettext-po` | stable | msgctxt, msgid_plural, fuzzy |
-
-See [Adapter Contract](docs/adapters.md) for the full specification.
-
-## Safety model
-
-Localize Anything is designed to be _safe by default_.
-
-| Safety property | How it's enforced |
-|----------------|-------------------|
-| **Staging first** | All output goes to a staging directory outside your project |
-| **Dry-run apply plan** | Operations are previewed before execution |
-| **Explicit confirmation** | Apply requires `--confirm-run-id` matching the delivery |
-| **Backups** | Every replaced file is backed up before overwrite |
-| **Source mutation check** | SHA-256 comparison before and after every run |
-| **No silent overwrite** | Conflicts block apply until resolved |
-| **Credential isolation** | API keys and tokens are never stored in memory or delivery |
-| **Target-only preservation** | Existing translations without source keys are preserved, not deleted |
-| **Blind benchmark isolation** | `reference_policy=blind` prevents existing translations from leaking into generation artifacts |
-
-See [Security](docs/security.md) for the full safety architecture.
-
-## Project memory
-
-Localize Anything maintains project state across runs:
-
-- **Translation memory** (`.localize-anything/translation-memory.jsonl`): approved and reviewed translations
-- **Session index** (`.localize-anything/sessions/index.json`): run history
-- **Config** (`.localize-anything/config.json`): operating mode, reference policy, source/target locale
-
-In `existing_locale_maintenance` mode, reviewed translations with unchanged source hashes
-are automatically preserved — no re-translation, no churn.
-
-## Review and delivery workflow
-
-```
-Review Agent → scoped sign-off → Delivery Decision → Apply Plan → Apply with backups
+```bash
+localize-anything inspect /path/to/project
 ```
 
-- **Review Agent**: imports human feedback, tracks which segments are signed off
-- **Delivery Decision**: assesses QA status, apply conflicts, and unprocessed assets
-- **Apply Plan**: lists every file operation (create / replace / unchanged / conflict)
-- **Apply**: executes only after owner confirms the run ID; creates backups for replacements
+## Example workflow
 
-Silent overwrite is never allowed.
+Create a staged Japanese greenfield delivery from an Android source file using
+synthetic drafts, without calling an external model:
 
-## Benchmarks and evidence
+```bash
+localize-anything localize-run /path/to/project \
+  --source-locale en-US \
+  --target-locale ja \
+  --source-file app/src/main/res/values/strings.xml \
+  --operating-mode greenfield_localization \
+  --reference-policy style_only \
+  --run-id greenfield-001 \
+  --synthetic-draft
+```
 
-### v0.2.1 Mode System Benchmark
+The run produces staged files and delivery evidence. Writing into the project is
+a separate, dry-run-planned action that requires explicit run-id confirmation.
 
-| Mode | Reference Policy | Result |
-|------|-----------------|--------|
+## Current support
+
+### Implemented core adapters
+
+These adapters are marked `implemented` in their manifests:
+
+- JSON locale files
+- YAML and TOML
+- CSV, TSV, and XLSX
+- Markdown and HTML text extraction/rebuild; code, attributes, and
+  `script`/`style`/`svg` content remain untouched
+- SRT and WebVTT
+- XLIFF 1.2 and 2.x
+- GNU gettext PO/POT
+
+### Experimental platform adapters
+
+- Android `strings.xml`
+- iOS `.strings` and `.stringsdict`
+- Xcode `.xcstrings` String Catalogs
+
+See the [Adapter Contract](docs/adapters.md) for adapter IDs, preservation rules,
+and the full format boundary.
+
+## Evidence
+
+### v0.2.1 mode-system benchmark
+
+| Mode | Reference policy | Result |
+|------|------------------|--------|
 | `blind_benchmark` | `blind` | pass — no leakage to generation artifacts |
 | `greenfield_localization` | `style_only` | pass |
 | `existing_locale_maintenance` | `preserve_existing` | pass — 10 preserved, 2 generated |
 | `rewrite_or_harmonization` | `tm_assisted` | pass |
 
-**Verified behaviors:**
-- Blind reference isolation: existing translations never leak into generation artifacts
-- Maintenance preservation: reviewed unchanged segments are preserved, not mass-rewritten
-- Obsolete key protection: target-only keys are detected, staged, and not silently deleted
-- Source mutation check: fixture file hashes unchanged across all runs
+The synthetic Android fixture contains 12 source segments and 10 existing
+`zh-CN` translations. The benchmark also verifies target-only key protection
+and unchanged source hashes. Run it with
+`python benchmarks/v021-mode-system/run.py`.
 
-**Fixture**: synthetic Android project (12 source segments, 10 existing zh-CN translations).
-Runner: `benchmarks/v021-mode-system/run.py`.
+### v0.2.4 release hygiene and CI coverage
+
+v0.2.4 adds no localization features. It validates the unit tests, protocol,
+adapter contracts, compilation, and all four public regression runners in CI on
+Python 3.11 and 3.12.
 
 ### v0.2.3 Android resource reliability
 
-Localize Anything v0.2.3 includes Android string-resource handling for:
+The experimental Android adapter covers:
 
 - `string`, `string-array`, and `plurals`
-- placeholders, escaped percent signs, and Android escapes such as `\n`, `\t`, `\'`, and `\"`
-- inline `<b>`, `<i>`, `<u>`, and simple `<a href="...">` markup
+- placeholders, escaped percent signs, and Android escapes such as `\n`, `\t`,
+  `\'`, and `\"`
+- inline `<b>`, `<i>`, and `<u>` tags, plus simple `<a href="...">` links
 - CDATA boundaries and XML comments before resources
-- source sets and canonically ordered resource qualifiers
-- blind benchmark and existing-locale maintenance modes
-- target-only obsolete resource preservation
-- deterministic review-risk metadata with truthful structural evidence
+- separate source sets and canonical resource qualifier routing, including
+  MCC/MNC ordering
+- blind reference isolation and existing-locale maintenance behavior
+- target-only obsolete resource preservation and fail-closed routing
+- unsupported complex markup preservation with `owner_review_required`
+- deterministic review-risk metadata for prioritization, not semantic
+  translation quality scoring
 
-See [Android Support in v0.2.3](docs/android-v0.2.3-support.md) for the
-current support boundary, known limitations, and explicit non-goals.
+See [Android Support in v0.2.3](docs/android-v0.2.3-support.md) for supported
+structures, known limitations, and explicit non-goals.
 
-### AntennaPod DeepSeek Translation Test
+### AntennaPod DeepSeek test
 
 <p align="center">
-  <img src="docs/assets/benchmark-antennapod.svg" alt="AntennaPod en-US → ja+ko DeepSeek benchmark: 869 segments, 0 QA issues, BUILD SUCCESSFUL" width="640">
+  <img src="docs/assets/benchmark-antennapod.svg" alt="AntennaPod en-US to Japanese and Korean DeepSeek benchmark: 869 segments, 0 QA issues, builds successful" width="640">
 </p>
 
-| Metric | Japanese (ja) | Korean (ko) |
-|--------|--------------|-------------|
+| Metric | Japanese (`ja`) | Korean (`ko`) |
+|--------|-----------------|---------------|
 | Source | AntennaPod `develop` branch | same |
 | Segments | 869 | 869 |
 | Batches | 29 | 29 |
 | Model | `deepseek-chat` | `deepseek-chat` |
-| QA | 0 blocking, 0 warnings | 0 blocking, 0 warnings |
+| Deterministic QA | 0 blocking, 0 warnings | 0 blocking, 0 warnings |
 | Build | `:app:assembleFreeDebug` ✓ | `:app:assembleFreeDebug` ✓ |
 
 Full pipeline: extract → batch → DeepSeek API → collect → stage → QA → deliver.
 
-> **Note**: This is engineering and automated QA evidence, not a claim of
-> professional native-level localization quality. The AntennaPod test
-> demonstrates pipeline correctness, not translation quality assessment.
+## Concepts
+
+### Operating modes
+
+| Mode | Intended use | Reference policy |
+|------|--------------|------------------|
+| `greenfield_localization` | Add a new locale | `style_only` |
+| `existing_locale_maintenance` | Maintain reviewed translations | `preserve_existing` |
+| `rewrite_or_harmonization` | Intentionally rewrite or align style | `tm_assisted` |
+| `blind_benchmark` | Evaluate without translation leakage | `blind` |
+
+### Project memory
+
+Localize Anything persists reviewed translation memory, session history, and
+project configuration under `.localize-anything/`. In maintenance mode, reviewed
+translations with unchanged source hashes survive subsequent runs without
+retranslation or churn.
+
+### Review and delivery
+
+```text
+Review Agent → scoped sign-off → Delivery Decision → Apply Plan → Apply with backups
+```
+
+Human acceptance is segment-scoped. The apply plan lists each create, replace,
+unchanged, or conflicting operation before any source file is written.
+
+<p align="center">
+  <img src="docs/assets/architecture-layers.svg" alt="Architecture layers: Protocol, Runtime, Agent, Adapters, Source and Delivery" width="640">
+</p>
 
 ## What it is not
 
-Localize Anything is **not**:
+Localize Anything is not:
 
 - a prompt collection
 - a generic machine translation wrapper
-- an APK / IPA repackaging tool
+- a finished enterprise translation management system
+- a full HTML parser or automatic localizer for arbitrary nested markup
+- a layout, drawable, or asset localizer; Gradle editor; or APK decompiler
+- a semantic translation quality scorer
+- an APK or IPA repackaging tool
 - a replacement for qualified human review
-- a tool that silently rewrites your source project
+- a tool that silently rewrites a source project
 - a claim that LLM output is production-ready without evidence
 
 ## Repository layout
 
-```
+```text
 protocol/         Portable schemas and lifecycle specification
 runtime/          Reference runtime (Python)
 adapters/         Adapter manifests and entrypoints
