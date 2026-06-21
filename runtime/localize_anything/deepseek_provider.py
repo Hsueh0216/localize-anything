@@ -13,29 +13,47 @@ from .json_adapter import extract_placeholders
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_MODEL = "deepseek-chat"  # fast model for translation
+DEEPSEEK_ENV_FILE_VARS = (
+    "LOCALIZE_ANYTHING_DEEPSEEK_ENV_FILE",
+    "DEEPSEEK_ENV_FILE",
+)
 SOURCE_FILES = [  # key source files to load for context
     (Path(__file__).resolve().parent.parent.parent.parent / "test02-antennapod/source/res/values/strings.xml"),
 ]
 
 
 def _get_api_key() -> str:
-    """Get DeepSeek API key from environment or config files."""
+    """Get DeepSeek API key from explicit environment configuration."""
     key = os.environ.get("DEEPSEEK_API_KEY", "")
     if key:
         return key
-    # Try known config locations
-    for loc in [
-        Path.home() / ".deepseek" / "api_key",
-        Path("/mnt/c/Users/eliot/Documents/New project/.env.reasonix"),
-    ]:
-        if loc.exists():
-            content = loc.read_text(encoding="utf-8")
-            for line in content.splitlines():
-                if "DEEPSEEK_API_KEY" in line:
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+
+    for env_var in DEEPSEEK_ENV_FILE_VARS:
+        env_file = os.environ.get(env_var, "").strip()
+        if env_file:
+            return _read_api_key_from_env_file(Path(env_file), env_var)
+
     raise RuntimeError(
-        "DEEPSEEK_API_KEY not found. Set it in environment or create ~/.deepseek/api_key"
+        "DEEPSEEK_API_KEY not found. Set DEEPSEEK_API_KEY or explicitly set "
+        "LOCALIZE_ANYTHING_DEEPSEEK_ENV_FILE to an env file containing DEEPSEEK_API_KEY."
     )
+
+
+def _read_api_key_from_env_file(path: Path, env_var: str) -> str:
+    if not path.exists():
+        raise RuntimeError(f"{env_var} points to an env file that does not exist.")
+
+    content = path.read_text(encoding="utf-8")
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("DEEPSEEK_API_KEY="):
+            key = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+            if key:
+                return key
+
+    raise RuntimeError(f"{env_var} does not contain DEEPSEEK_API_KEY.")
 
 
 def translate_batch_deepseek(

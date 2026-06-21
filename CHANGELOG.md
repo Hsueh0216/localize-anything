@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## v0.3.1 - Provider Path Hygiene Fix
+
+### Fixed
+
+- Removed a hardcoded private env-file path from the DeepSeek provider.
+- Require DeepSeek provider credentials through explicit environment
+  configuration instead of default user-specific filesystem locations.
+- Added runtime-code hygiene coverage to guard against private local path
+  leakage.
+
+### Notes
+
+- This release does not change localization behavior.
+- This release does not change Android adapter behavior.
+- `PROTOCOL_VERSION` remains `0.1`.
+
 ## v0.3.0 - Real-Project Workflow Hardening
 
 ### Added
