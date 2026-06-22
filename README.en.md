@@ -19,7 +19,7 @@
 <p align="center">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue" />
   <img alt="CI" src="https://github.com/xueyang-dev/localize-anything/actions/workflows/ci.yml/badge.svg" />
-  <img alt="Release: v0.3.1" src="https://img.shields.io/badge/release-v0.3.1-blue" />
+  <img alt="Release: v0.3.2" src="https://img.shields.io/badge/release-v0.3.2-blue" />
   <img alt="QA: deterministic" src="https://img.shields.io/badge/QA-deterministic-green" />
   <img alt="Apply: staged first" src="https://img.shields.io/badge/apply-staged%20first-blueviolet" />
 </p>
@@ -41,12 +41,13 @@ Use Localize Anything when you need to:
 
 ## Status
 
-**Current release:** [v0.3.1 — Provider Path Hygiene Fix](https://github.com/xueyang-dev/localize-anything/releases/tag/v0.3.1)
+**Current release:** [v0.3.2 — Android Coverage Diagnostics](https://github.com/xueyang-dev/localize-anything/releases/tag/v0.3.2)
 
-v0.3.1 is a cleanup and fix release. It removes a hardcoded private DeepSeek provider env-file path and requires provider credentials to be supplied through explicit environment configuration. v0.3.0 hardened real-project workflows with read-only inspect summaries and refreshed disposable-clone smoke evidence. These releases do not expand the localization feature boundary; the current Android capability boundary remains documented by the v0.2.3 reliability release.
+v0.3.2 is a diagnostics and documentation release. It adds Android coverage diagnostics that distinguish app source resources from Gradle merged dependency resources, and warns when source-only Android localization may not cover all visible UI strings. It does not include merged-resource overlay generation, apply-to-project write-back, or provider-backed translation.
 
 Verified engineering evidence includes:
 
+- v0.3.2 Android coverage diagnostics: pass;
 - v0.3.1 release audit: pass;
 - runtime code verified against checked private local path patterns;
 - unit tests, protocol validation, adapter contract validation, compile checks, and public regression runners: pass;
@@ -56,7 +57,7 @@ Verified engineering evidence includes:
 - v0.2.1 mode-system benchmark: pass;
 - AntennaPod DeepSeek test: 869 segments in each of two target locales, 0 deterministic QA blockers or warnings, and successful builds for both locales.
 
-These results demonstrate pipeline behavior, structural preservation, and delivery evidence. They are not a claim of native-level translation quality, and they do not mean generated translations should ship without review. See the [changelog](CHANGELOG.md), [v0.3.1 release audit](docs/v0.3.1-release-audit.md), and [real-project stress matrix](docs/android-real-project-stress-matrix.md) for details.
+These results demonstrate pipeline behavior, structural preservation, and delivery evidence. They are not a claim of native-level translation quality, and they do not mean generated translations should ship without review. See the [changelog](CHANGELOG.md), [Android coverage model](docs/android-coverage-model.md), [v0.3.1 release audit](docs/v0.3.1-release-audit.md), and [real-project stress matrix](docs/android-real-project-stress-matrix.md) for details.
 
 ## Why this exists
 

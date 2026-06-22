@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## v0.3.2 - Android Coverage Diagnostics
+
+### Added
+
+- Add Android coverage diagnostics that distinguish editable app source
+  resources from Gradle merged dependency resources.
+- Add inspect and run-summary warnings when source-only Android localization may
+  leave visible dependency-provided UI strings in the source language.
+- Document the Android coverage model, including runtime text that is outside
+  Android resource-file localization.
+
+### Notes
+
+- This release does not add merged dependency overlay generation.
+- This release does not add apply-to-project write-back.
+- This release does not run provider-backed translation.
+- `PROTOCOL_VERSION` remains `0.1`.
+
 ## v0.3.1 - Provider Path Hygiene Fix
 
 ### Fixed
