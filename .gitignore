@@ -63,6 +63,7 @@ benchmarks/**/__pycache__/
 test01-*/
 test02-*/
 test03-*/
+test05-*/
 test_*.py
 *.tmp
 *.bak
