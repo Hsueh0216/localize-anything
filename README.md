@@ -1,7 +1,7 @@
 # Localize Anything
 
 <p align="center">
-  <img src="docs/assets/logo-localize-anything.png" alt="Localize Anything 项目 Logo" width="180">
+  <img src="docs/assets/logo-localize-anything-transparent.png" alt="Localize Anything 项目 Logo" width="180">
 </p>
 
 <p align="center">

@@ -15,7 +15,7 @@ Asset inventory for the Localize Anything documentation.
 
 | File | Purpose | Used in | Maintained |
 |------|---------|---------|------------|
-| `logo-localize-anything.png` | Project logo | README.md, README.en.md | generated asset |
+| `logo-localize-anything-transparent.png` | Project logo | README.md, README.en.md | generated asset |
 
 ## Conventions
 
