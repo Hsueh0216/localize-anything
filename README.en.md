@@ -19,7 +19,7 @@
 <p align="center">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue" />
   <img alt="CI" src="https://github.com/xueyang-dev/localize-anything/actions/workflows/ci.yml/badge.svg" />
-  <img alt="Release: v0.3.2" src="https://img.shields.io/badge/release-v0.3.2-blue" />
+  <img alt="Release: v0.4.0" src="https://img.shields.io/badge/release-v0.4.0-blue" />
   <img alt="QA: deterministic" src="https://img.shields.io/badge/QA-deterministic-green" />
   <img alt="Apply: staged first" src="https://img.shields.io/badge/apply-staged%20first-blueviolet" />
 </p>
@@ -34,19 +34,25 @@ Use Localize Anything when you need to:
 
 - localize real source projects, not isolated strings;
 - protect placeholders, XML/HTML markup, resource keys, escapes, and file structure;
-- generate reviewable target-locale files for Android, iOS, or common text resources;
+- generate reviewable target-locale files for Word documents, Android, iOS, or common text resources;
 - inspect staged files, QA evidence, delivery decisions, and apply plans before writing changes;
 - preserve reviewed translations during existing-locale maintenance instead of re-translating unchanged content;
 - use different reference-translation policies for blind benchmarks, greenfield localization, maintenance, and rewrite workflows.
 
 ## Status
 
-**Current release:** [v0.3.2 — Android Coverage Diagnostics](https://github.com/xueyang-dev/localize-anything/releases/tag/v0.3.2)
+**Current release:** [v0.4.0 — Word Document Localization](https://github.com/xueyang-dev/localize-anything/releases/tag/v0.4.0)
 
-v0.3.2 is a diagnostics and documentation release. It adds Android coverage diagnostics that distinguish app source resources from Gradle merged dependency resources, and warns when source-only Android localization may not cover all visible UI strings. It does not include merged-resource overlay generation, apply-to-project write-back, or provider-backed translation.
+v0.4.0 adds high-fidelity Word OpenXML localization for `.docx`, `.dotx`, `.docm`, and `.dotm` files, plus Workbench file/folder import for dragging Word documents into the existing staging and delivery workflow. Word output normalizes localized run fonts by target locale, for example English uses Arial and Simplified Chinese uses Microsoft YaHei, while deterministic QA protects package structure, relationships, styles, non-text resources, non-font run properties, paragraph properties, placeholders, and macro bytes.
+
+This release also adds explicit opt-in Android merged dependency resource overlay generation for projects that need dependency-provided Android resources localized. Legacy binary `.doc` files, image text, embedded objects, and provider-backed translation quality remain outside the deterministic coverage claim.
 
 Verified engineering evidence includes:
 
+- v0.4.0 Word adapter extract/rebuild/validate coverage: pass;
+- Word `.docm` macro-byte preservation: pass;
+- Workbench file/folder import API and UI smoke tests: pass;
+- opt-in Android merged dependency resource overlay tests: pass;
 - v0.3.2 Android coverage diagnostics: pass;
 - v0.3.1 release audit: pass;
 - runtime code verified against checked private local path patterns;
@@ -57,7 +63,7 @@ Verified engineering evidence includes:
 - v0.2.1 mode-system benchmark: pass;
 - AntennaPod DeepSeek test: 869 segments in each of two target locales, 0 deterministic QA blockers or warnings, and successful builds for both locales.
 
-These results demonstrate pipeline behavior, structural preservation, and delivery evidence. They are not a claim of native-level translation quality, and they do not mean generated translations should ship without review. See the [changelog](CHANGELOG.md), [Android coverage model](docs/android-coverage-model.md), [v0.3.1 release audit](docs/v0.3.1-release-audit.md), and [real-project stress matrix](docs/android-real-project-stress-matrix.md) for details.
+These results demonstrate pipeline behavior, structural preservation, and delivery evidence. They are not a claim of native-level translation quality, and they do not mean generated translations should ship without review. See the [changelog](CHANGELOG.md), [Adapter Contract](docs/adapters.md), [Android coverage model](docs/android-coverage-model.md), [v0.3.1 release audit](docs/v0.3.1-release-audit.md), and [real-project stress matrix](docs/android-real-project-stress-matrix.md) for details.
 
 ## Why this exists
 
@@ -163,6 +169,7 @@ The run produces staged files, a QA report, a delivery decision, and an apply pl
 | YAML / TOML | Localization-resource scalar extraction and rebuild |
 | CSV / TSV / XLSX | Table coordinates, key columns, and non-text cell protection |
 | Markdown / HTML | Visible text extraction/rebuild; code, attributes, and `script`/`style`/`svg` content remain untouched |
+| Word OpenXML documents | `.docx`, `.dotx`, `.docm`, and `.dotm` visible text extraction/rebuild with target-locale font normalization and deterministic package QA |
 | SRT / WebVTT | Cue identity, timing, and inline tag preservation |
 | XLIFF 1.2 / 2.x | Unit IDs, source text, and inline XML preservation |
 | GNU gettext PO/POT | Context, comments, plurals, headers, and placeholder preservation |
@@ -171,13 +178,19 @@ The run produces staged files, a QA report, a delivery decision, and an apply pl
 
 | Platform resource | Current boundary |
 | --- | --- |
-| Android `strings.xml` | Supports `string`, `string-array`, and `plurals`, with staging and deterministic QA |
+| Android `strings.xml` | Supports `string`, `string-array`, and `plurals`, with staging, deterministic QA, and explicit opt-in merged dependency resource overlays |
 | iOS `.strings` / `.stringsdict` | Supports basic resource extraction, rebuild, and target `.lproj` staging |
 | Xcode `.xcstrings` | Supports source-language units and variation leaves written as target-language entries |
 
 See the [Adapter Contract](docs/adapters.md) for adapter IDs, preservation rules, and the full format boundary.
 
 ## Evidence
+
+### v0.4.0 Word document localization
+
+v0.4.0 adds a stdlib-only Word OpenXML adapter and CLI path for `.docx`, `.dotx`, `.docm`, and `.dotm` files. It localizes visible editable XML text, normalizes target-locale fonts on localized runs, preserves non-text package content, and verifies macro bytes without executing macros. The Workbench can import selected files, folders, or dropped files into a temporary project before running the normal staged delivery workflow.
+
+Legacy `.doc`, encrypted or malformed packages, image text, and embedded object content are not silently claimed as localized.
 
 ### v0.3.1 release audit
 

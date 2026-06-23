@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+## v0.4.0 - Word Document Localization
+
+### Added
+
+- Add the `core.word-document` adapter for `.docx`, `.dotx`, `.docm`, and
+  `.dotm` OpenXML packages.
+- Extract, rebuild, and validate visible WordprocessingML and DrawingML text in
+  body content, tables, headers, footers, notes, comments, text boxes, charts,
+  and safely editable diagram/drawing XML.
+- Add `extract-word`, `rebuild-word`, and `validate-word` CLI commands.
+- Add Workbench file/folder import and drag-and-drop upload into a temporary
+  project so Word documents can reuse the existing agent-run, staging,
+  delivery, and apply flow.
+- Add explicit opt-in Android merged dependency resource overlay generation for
+  projects that need to localize dependency-provided Android resources.
+
+### Changed
+
+- Localized Word runs now normalize the font family by target locale. English
+  output uses Arial; Simplified Chinese uses Microsoft YaHei; Japanese and
+  Korean use common platform fonts.
+- Word QA preserves package entries, relationships, styles, non-text resources,
+  paragraph properties, non-font run properties, placeholder parity, and macro
+  bytes while allowing the target-locale font-family normalization.
+
+### Notes
+
+- Legacy binary `.doc` remains unsupported and must be converted to OpenXML
+  before localization.
+- Macro documents are supported only as OpenXML packages; `vbaProject.bin` bytes
+  are copied and validated but never executed.
+- Images, embedded objects, and scanned/image text are preserved but not
+  localized.
+- `PROTOCOL_VERSION` remains `0.1`.
+
 ## v0.3.2 - Android Coverage Diagnostics
 
 ### Added
