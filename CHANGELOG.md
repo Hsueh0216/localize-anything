@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Add term-governance groundwork with seeded `term-registry.csv`,
+  `term-decisions.jsonl`, `forbidden-translations.csv`,
+  `term-conflicts.jsonl`, and `term-provenance.jsonl` project artifacts.
+- Add a `term-decision` protocol schema and feed approved/locked term-registry
+  entries plus forbidden translations into work-packet hard constraints.
+
 ## v0.4.1 - Workbench UI Wiring
 
 ### Changed

@@ -61,10 +61,31 @@ Canonical project memory consists of:
 localization-context.md
 glossary.csv
 translation-memory.jsonl
+term-registry.csv
+term-decisions.jsonl
+forbidden-translations.csv
+term-conflicts.jsonl
+term-provenance.jsonl
 delivery-manifest.json
 ```
 
 The working context packet is ephemeral. A rebuildable SQLite cache may index canonical memory, but never becomes a source of truth.
+
+## Term Governance
+
+Glossaries are advisory memory. The term governance files represent reviewable
+decisions:
+
+- `term-registry.csv` stores approved or locked source-to-target term choices,
+  scope, priority, and rejected alternatives.
+- `term-decisions.jsonl` stores provenance-bearing term decision records.
+- `forbidden-translations.csv` stores target renderings that must not be used.
+- `term-conflicts.jsonl` and `term-provenance.jsonl` keep unresolved conflicts
+  and evidence history separate from approved decisions.
+
+Generation-facing work packets expose approved and locked term-registry entries
+through `memory.hard_constraints`. Blind benchmark mode hides target-language
+term and translation-memory content to preserve reference isolation.
 
 ## Source and Provenance
 

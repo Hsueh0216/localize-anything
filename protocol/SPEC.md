@@ -12,6 +12,11 @@ Define portable artifacts between agents, runtimes, and adapters. The protocol d
 - Adapter manifests declare formats, capabilities, permissions, dependencies, and entrypoints.
 - Segment JSONL carries source units and optional localized targets.
 - Delivery manifests record immutable run facts and scoped status.
+- Term decisions record approved, locked, rejected, risky, or scoped
+  terminology decisions with provenance. `term-decisions.jsonl` stores one
+  `term-decision` record per line; `term-registry.csv` and
+  `forbidden-translations.csv` provide deterministic runtime inputs for hard
+  terminology constraints.
 - Delivery decision reports combine QA findings, staged output state, apply
   plans, and unprocessed assets into explicit owner/developer decisions.
 - QA results keep runtime, agent, and human evidence distinct.
@@ -19,6 +24,10 @@ Define portable artifacts between agents, runtimes, and adapters. The protocol d
   segment-level issues, separate from deterministic QA and human acceptance.
 - Batch plans group segments by content unit and adapter constraints.
 - Work packets carry an ephemeral, budgeted context selection.
+- Work packets may include `memory.hard_constraints` for approved or locked
+  term-registry entries, forbidden translations, structural rules, and future
+  claim constraints. Blind benchmark mode hides target-language term registry
+  and translation-memory content from generation-facing packets.
 - Draft requests turn a work packet into provider-agnostic host-agent
   instructions and a JSONL segment output contract for translation generation.
 - Draft prompts render those requests as paste-ready Markdown for manual
