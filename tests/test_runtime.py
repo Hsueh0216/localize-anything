@@ -1510,6 +1510,8 @@ class ProjectTests(unittest.TestCase):
             state = Path(result["state_directory"])
             self.assertTrue((state / "config.json").exists())
             self.assertTrue((state / "localization-context.md").exists())
+            self.assertTrue((state / "localization-brief.json").exists())
+            self.assertTrue((state / "localization-brief.yaml").exists())
             self.assertTrue((state / "glossary.csv").exists())
             self.assertTrue((state / "translation-memory.jsonl").exists())
             self.assertTrue((state / "term-registry.csv").exists())
@@ -1520,8 +1522,10 @@ class ProjectTests(unittest.TestCase):
             self.assertTrue((state / "delivery-manifest.json").exists())
             manifest = json.loads((state / "delivery-manifest.json").read_text(encoding="utf-8"))
             config = json.loads((state / "config.json").read_text(encoding="utf-8"))
+            brief = json.loads((state / "localization-brief.json").read_text(encoding="utf-8"))
             assert_protocol_schema(self, "project-config", config)
             assert_protocol_schema(self, "delivery-manifest", manifest)
+            assert_protocol_schema(self, "localization-brief", brief)
             self.assertEqual(config["operating_mode"], "greenfield_localization")
             self.assertEqual(config["reference_policy"], "style_only")
             self.assertEqual(manifest["project"]["operating_mode"], "greenfield_localization")
@@ -1529,8 +1533,22 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(manifest["source_material"][0]["role"], "source_of_truth")
             self.assertEqual([item["path"] for item in manifest["source_material"]], ["locales/en-US.json"])
             self.assertEqual(manifest["unprocessed_non_text_assets"][0]["asset_type"], "image")
+            self.assertEqual(manifest["assets"]["localization_brief"], "localization-brief.json")
             self.assertEqual(manifest["assets"]["term_registry"], "term-registry.csv")
             self.assertEqual(manifest["assets"]["term_decisions"], "term-decisions.jsonl")
+            self.assertEqual(brief["document_type"], "generic_localization_project")
+            self.assertEqual(brief["source_genre"], "project_locale_assets")
+            self.assertEqual(brief["target_mode"], "greenfield_localization_delivery")
+            self.assertEqual(brief["target_audience"], ["unknown_requires_user_confirmation"])
+            self.assertEqual(brief["task_intent"]["scenario"], "project_localization")
+            self.assertEqual(brief["source_surface"]["selected_source_files"], ["locales/en-US.json"])
+            self.assertIn("localized_rewrite", brief["allowed_transformations"])
+            self.assertIn("unsupported_official_recognition", brief["forbidden_behaviors"])
+            self.assertTrue(brief["constraints"]["do_not_invent_facts"])
+            self.assertIn("target_audience", {item["item"] for item in brief["required_human_confirmations"]})
+            brief_yaml = (state / "localization-brief.yaml").read_text(encoding="utf-8")
+            self.assertIn("document_type: generic_localization_project", brief_yaml)
+            self.assertIn("task_intent:", brief_yaml)
 
     def test_inspect_ignores_generated_outputs_and_records_routing_evidence(self) -> None:
         source_file = "app/src/main/res/values/strings.xml"
@@ -1606,6 +1624,16 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(coverage["categories"]["app_source_resources"]["string_count"], 8)
             self.assertEqual(coverage["categories"]["merged_dependency_resources"]["string_count"], 2)
             self.assertEqual(coverage["categories"]["non_resource_runtime_text"]["included"], False)
+
+            initialized = initialize_project(project, "en-US", [source_file], ["zh-CN"])
+            brief = read_json(Path(initialized["state_directory"]) / "localization-brief.json")
+            assert_protocol_schema(self, "localization-brief", brief)
+            self.assertEqual(brief["document_type"], "android_resource_project")
+            self.assertEqual(brief["task_intent"]["scenario"], "software_resource_localization")
+            self.assertIn(
+                "android_visible_ui_coverage",
+                {item["item"] for item in brief["required_human_confirmations"]},
+            )
 
     def test_android_source_set_detection_excludes_locale_dirs(self) -> None:
         project = REPOSITORY_ROOT / "benchmarks" / "v022-android-resource-reliability" / "fixture-source-sets"
@@ -3214,6 +3242,8 @@ class DeliveryLifecycleTests(unittest.TestCase):
             for name in (
                 "delivery-manifest.json",
                 "localization-context.md",
+                "localization-brief.json",
+                "localization-brief.yaml",
                 "glossary.csv",
                 "translation-memory.jsonl",
                 "term-registry.csv",
@@ -3515,7 +3545,7 @@ class ProtocolFilesTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         result = validate_protocol_tree(root / "protocol")
         self.assertEqual(result["status"], "pass", result["errors"])
-        self.assertEqual(result["schemas_checked"], 20)
+        self.assertEqual(result["schemas_checked"], 21)
 
 
 class V021ModeSystemBenchmarkTests(unittest.TestCase):

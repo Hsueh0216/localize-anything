@@ -9,6 +9,15 @@
   `term-conflicts.jsonl`, and `term-provenance.jsonl` project artifacts.
 - Add a `term-decision` protocol schema and feed approved/locked term-registry
   entries plus forbidden translations into work-packet hard constraints.
+- Add localization-brief groundwork with machine-readable
+  `localization-brief.json` and human-readable `localization-brief.yaml`
+  artifacts seeded during project initialization.
+- Add a `localization-brief` protocol schema and delivery packaging support so
+  task intent, source surface, constraints, and required human confirmations are
+  recorded before generation.
+- Align brief fields with the optimized architecture structure:
+  `document_type`, `source_genre`, `target_mode`, `target_audience`, `style`,
+  `constraints`, `allowed_transformations`, and `forbidden_behaviors`.
 
 ## v0.4.1 - Workbench UI Wiring
 

@@ -24,6 +24,8 @@
   ],
   "assets": {
     "context": "localization-context.md",
+    "localization_brief": "localization-brief.json",
+    "localization_brief_yaml": "localization-brief.yaml",
     "glossary": "glossary.csv",
     "translation_memory": "translation-memory.jsonl",
     "term_registry": "term-registry.csv",
