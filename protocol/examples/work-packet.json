@@ -33,6 +33,33 @@
   ],
   "memory": {
     "context_sections": [],
+    "hard_constraints": {
+      "term_registry": [
+        {
+          "source_term": "Start game",
+          "target_term": "开始游戏",
+          "type": "ui_term",
+          "status": "approved",
+          "priority": "user_confirmed",
+          "scope": "main menu",
+          "notes": ""
+        }
+      ],
+      "forbidden_translations": [
+        {
+          "source_term": "Start game",
+          "forbidden_target": "启动比赛",
+          "target_locale": "zh-CN",
+          "scope": "main menu",
+          "reason": "term_registry_forbidden_target",
+          "status": "rejected"
+        }
+      ],
+      "placeholder_rules": [],
+      "markup_rules": [],
+      "claim_constraints": [],
+      "visibility": "approved_locked_terms_only"
+    },
     "glossary": [],
     "translation_memory": []
   },

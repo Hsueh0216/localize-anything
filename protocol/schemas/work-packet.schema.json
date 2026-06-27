@@ -34,6 +34,19 @@
       "required": ["context_sections", "glossary", "translation_memory"],
       "properties": {
         "context_sections": { "type": "array", "items": { "type": "object" } },
+        "hard_constraints": {
+          "type": "object",
+          "required": ["term_registry", "forbidden_translations"],
+          "properties": {
+            "term_registry": { "type": "array", "items": { "type": "object" } },
+            "forbidden_translations": { "type": "array", "items": { "type": "object" } },
+            "placeholder_rules": { "type": "array", "items": { "type": "object" } },
+            "markup_rules": { "type": "array", "items": { "type": "object" } },
+            "claim_constraints": { "type": "array", "items": { "type": "object" } },
+            "visibility": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
         "glossary": { "type": "array", "items": { "type": "object" } },
         "translation_memory": { "type": "array", "items": { "type": "object" } }
       },

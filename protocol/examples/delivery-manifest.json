@@ -26,6 +26,11 @@
     "context": "localization-context.md",
     "glossary": "glossary.csv",
     "translation_memory": "translation-memory.jsonl",
+    "term_registry": "term-registry.csv",
+    "forbidden_translations": "forbidden-translations.csv",
+    "term_decisions": "term-decisions.jsonl",
+    "term_conflicts": "term-conflicts.jsonl",
+    "term_provenance": "term-provenance.jsonl",
     "qa_report": "qa-report.md"
   },
   "qa": {

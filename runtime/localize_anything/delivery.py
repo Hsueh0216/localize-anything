@@ -10,9 +10,11 @@ from typing import Any
 
 from . import PROTOCOL_VERSION, __version__
 from .io_utils import read_json, sha256_file, write_json
+from .term_governance import TERM_GOVERNANCE_ASSETS, term_governance_asset_paths
 
 
 CANONICAL_ASSETS = ("localization-context.md", "glossary.csv", "translation-memory.jsonl")
+OPTIONAL_CANONICAL_ASSETS = tuple(TERM_GOVERNANCE_ASSETS.values())
 
 
 def package_delivery(
@@ -65,7 +67,8 @@ def package_delivery(
     output_root.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{run_id}.", dir=output_root))
     try:
-        for asset in CANONICAL_ASSETS:
+        optional_assets = [name for name in OPTIONAL_CANONICAL_ASSETS if (state_dir / name).is_file()]
+        for asset in (*CANONICAL_ASSETS, *optional_assets):
             shutil.copy2(state_dir / asset, temporary / asset)
         outputs: list[dict[str, Any]] = []
         output_metadata = output_metadata or {}
@@ -109,6 +112,7 @@ def package_delivery(
                 "context": "localization-context.md",
                 "glossary": "glossary.csv",
                 "translation_memory": "translation-memory.jsonl",
+                **term_governance_asset_paths(state_dir),
                 "qa_report": "qa-report.md",
             },
             "qa": {

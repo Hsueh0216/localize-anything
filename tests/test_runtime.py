@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import csv
 import json
 import gettext
 import http.client
@@ -1511,6 +1512,11 @@ class ProjectTests(unittest.TestCase):
             self.assertTrue((state / "localization-context.md").exists())
             self.assertTrue((state / "glossary.csv").exists())
             self.assertTrue((state / "translation-memory.jsonl").exists())
+            self.assertTrue((state / "term-registry.csv").exists())
+            self.assertTrue((state / "forbidden-translations.csv").exists())
+            self.assertTrue((state / "term-decisions.jsonl").exists())
+            self.assertTrue((state / "term-conflicts.jsonl").exists())
+            self.assertTrue((state / "term-provenance.jsonl").exists())
             self.assertTrue((state / "delivery-manifest.json").exists())
             manifest = json.loads((state / "delivery-manifest.json").read_text(encoding="utf-8"))
             config = json.loads((state / "config.json").read_text(encoding="utf-8"))
@@ -1523,6 +1529,8 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(manifest["source_material"][0]["role"], "source_of_truth")
             self.assertEqual([item["path"] for item in manifest["source_material"]], ["locales/en-US.json"])
             self.assertEqual(manifest["unprocessed_non_text_assets"][0]["asset_type"], "image")
+            self.assertEqual(manifest["assets"]["term_registry"], "term-registry.csv")
+            self.assertEqual(manifest["assets"]["term_decisions"], "term-decisions.jsonl")
 
     def test_inspect_ignores_generated_outputs_and_records_routing_evidence(self) -> None:
         source_file = "app/src/main/res/values/strings.xml"
@@ -1999,6 +2007,104 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(retry["request_count"], 1)
             self.assertEqual(retry["retry"]["failed_batch_ids"], ["batch-0001"])
             self.assertEqual(retry["batches"][0]["generated"], (handoff_root / "retry-generated" / "batch-0001.jsonl").as_posix())
+
+    def test_term_governance_hard_constraints_feed_work_packets(self) -> None:
+        source = FIXTURE_ROOT / "locales" / "en-US.json"
+        segments = extract_segments(source, "en-US", "locales/en-US.json")
+        plan = create_batch_plan(segments, "en-US", ["zh-CN"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            locale_dir = project / "locales"
+            locale_dir.mkdir(parents=True)
+            (locale_dir / "en-US.json").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+            result = initialize_project(project, "en-US", ["locales/en-US.json"], ["zh-CN"])
+            state = Path(result["state_directory"])
+
+            with (state / "term-registry.csv").open("a", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "source_term",
+                        "target_term",
+                        "type",
+                        "status",
+                        "priority",
+                        "scope",
+                        "notes",
+                        "source_locale",
+                        "target_locale",
+                        "forbidden_targets",
+                        "provenance",
+                    ],
+                )
+                writer.writerow(
+                    {
+                        "source_term": "Weight",
+                        "target_term": "重量",
+                        "type": "ui_term",
+                        "status": "locked",
+                        "priority": "user_confirmed",
+                        "scope": "inventory",
+                        "notes": "Use the short UI term.",
+                        "source_locale": "en-US",
+                        "target_locale": "zh-CN",
+                        "forbidden_targets": "体重|砝码",
+                        "provenance": "user_decision",
+                    }
+                )
+                writer.writerow(
+                    {
+                        "source_term": "coins",
+                        "target_term": "金币",
+                        "type": "ui_term",
+                        "status": "suggested",
+                        "priority": "model_suggestion",
+                        "scope": "inventory",
+                        "target_locale": "zh-CN",
+                    }
+                )
+            with (state / "forbidden-translations.csv").open("a", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "source_term",
+                        "forbidden_target",
+                        "target_locale",
+                        "scope",
+                        "reason",
+                        "status",
+                        "provenance",
+                    ],
+                )
+                writer.writerow(
+                    {
+                        "source_term": "coins",
+                        "forbidden_target": "硬币们",
+                        "target_locale": "zh-CN",
+                        "scope": "inventory",
+                        "reason": "unnatural_plural",
+                        "status": "rejected",
+                        "provenance": "user_decision",
+                    }
+                )
+
+            packet = build_work_packet(plan, "batch-0001", segments, state, "zh-CN")
+            assert_protocol_schema(self, "work-packet", packet)
+            hard_constraints = packet["memory"]["hard_constraints"]
+            self.assertEqual(hard_constraints["visibility"], "approved_locked_terms_only")
+            self.assertEqual([item["source_term"] for item in hard_constraints["term_registry"]], ["Weight"])
+            self.assertEqual(hard_constraints["term_registry"][0]["target_term"], "重量")
+            self.assertEqual(
+                {(item["source_term"], item["forbidden_target"]) for item in hard_constraints["forbidden_translations"]},
+                {("Weight", "体重"), ("Weight", "砝码"), ("coins", "硬币们")},
+            )
+
+            blind_plan = create_batch_plan(segments, "en-US", ["zh-CN"], operating_mode="blind_benchmark")
+            blind_packet = build_work_packet(blind_plan, "batch-0001", segments, state, "zh-CN")
+            self.assertEqual(blind_packet["memory"]["hard_constraints"]["term_registry"], [])
+            self.assertEqual(blind_packet["memory"]["hard_constraints"]["forbidden_translations"], [])
+            self.assertEqual(blind_packet["memory"]["hard_constraints"]["visibility"], "hidden_by_reference_policy")
 
 
 class LocalizeRunTests(unittest.TestCase):
@@ -3110,6 +3216,11 @@ class DeliveryLifecycleTests(unittest.TestCase):
                 "localization-context.md",
                 "glossary.csv",
                 "translation-memory.jsonl",
+                "term-registry.csv",
+                "forbidden-translations.csv",
+                "term-decisions.jsonl",
+                "term-conflicts.jsonl",
+                "term-provenance.jsonl",
                 "qa-report.md",
                 "files/locales/zh-CN.json",
             ):
@@ -3404,7 +3515,7 @@ class ProtocolFilesTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         result = validate_protocol_tree(root / "protocol")
         self.assertEqual(result["status"], "pass", result["errors"])
-        self.assertEqual(result["schemas_checked"], 19)
+        self.assertEqual(result["schemas_checked"], 20)
 
 
 class V021ModeSystemBenchmarkTests(unittest.TestCase):

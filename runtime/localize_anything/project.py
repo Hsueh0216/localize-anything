@@ -13,6 +13,7 @@ from . import PROTOCOL_VERSION, __version__
 from .android_strings_adapter import android_resource_routing, is_android_strings_path
 from .ios_strings_adapter import is_ios_strings_path
 from .modes import resolve_mode_policy
+from .term_governance import TERM_GOVERNANCE_ASSETS, write_term_governance_seed
 from .xcstrings_adapter import is_xcstrings_path
 
 
@@ -265,6 +266,7 @@ def initialize_project(
     _write_if_missing(state / "localization-context.md", _context_template(source_locale, target_locales))
     _write_glossary_if_missing(state / "glossary.csv")
     _write_if_missing(state / "translation-memory.jsonl", "")
+    write_term_governance_seed(state)
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     manifest = {
@@ -286,6 +288,7 @@ def initialize_project(
             "context": "localization-context.md",
             "glossary": "glossary.csv",
             "translation_memory": "translation-memory.jsonl",
+            **TERM_GOVERNANCE_ASSETS,
         },
         "qa": {
             "status": "not_checked",
