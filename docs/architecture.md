@@ -29,6 +29,7 @@ Intake
  -> Capability Scan
  -> Source-of-Truth Confirmation
  -> Target Locale Confirmation
+ -> Localization Brief
  -> Adapter Detection
  -> Preflight Policy Selection
  -> Preflight Scan
@@ -59,6 +60,8 @@ Canonical project memory consists of:
 
 ```text
 localization-context.md
+localization-brief.json
+localization-brief.yaml
 glossary.csv
 translation-memory.jsonl
 term-registry.csv
@@ -86,6 +89,32 @@ decisions:
 Generation-facing work packets expose approved and locked term-registry entries
 through `memory.hard_constraints`. Blind benchmark mode hides target-language
 term and translation-memory content to preserve reference isolation.
+
+## Localization Brief
+
+`localization-brief.json` is the machine-readable draft of task intent before
+generation. `localization-brief.yaml` is the same draft rendered for human
+review. The runtime can infer a conservative brief from inspection, confirmed
+source files, selected mode, and privacy/workflow settings, but it cannot accept
+task intent for the user.
+
+The brief records:
+
+- `document_type`, `source_genre`, `target_mode`, and `target_audience`;
+- top-level `style`, `constraints`, `allowed_transformations`, and
+  `forbidden_behaviors` for review-facing compatibility with the optimized
+  architecture structure;
+- scenario and target delivery form;
+- selected source surface and adapter counts;
+- workflow/privacy/data-classification strategy;
+- hard constraints such as fact preservation, placeholder preservation, and
+  markup preservation;
+- required human confirmations for task intent, audience, claims/metrics, or
+  coverage gaps.
+
+Passing deterministic QA does not replace brief confirmation. The brief is the
+first artifact boundary between "files were processed" and "the localization
+task intent is understood."
 
 ## Source and Provenance
 

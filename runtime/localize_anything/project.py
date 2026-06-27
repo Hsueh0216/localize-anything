@@ -12,6 +12,7 @@ from xml.etree import ElementTree
 from . import PROTOCOL_VERSION, __version__
 from .android_strings_adapter import android_resource_routing, is_android_strings_path
 from .ios_strings_adapter import is_ios_strings_path
+from .localization_brief import build_localization_brief, write_localization_brief
 from .modes import resolve_mode_policy
 from .term_governance import TERM_GOVERNANCE_ASSETS, write_term_governance_seed
 from .xcstrings_adapter import is_xcstrings_path
@@ -267,6 +268,19 @@ def initialize_project(
     _write_glossary_if_missing(state / "glossary.csv")
     _write_if_missing(state / "translation-memory.jsonl", "")
     write_term_governance_seed(state)
+    localization_brief = build_localization_brief(
+        inventory,
+        source_locale=source_locale,
+        source_files=source_files,
+        target_locales=target_locales,
+        operating_mode=operating_mode,
+        reference_policy=reference_policy,
+        workflow_depth=workflow_depth,
+        preflight_mode=preflight_mode,
+        privacy_mode=privacy_mode,
+        data_classification=data_classification,
+    )
+    localization_brief_assets = write_localization_brief(state, localization_brief)
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     manifest = {
@@ -286,6 +300,7 @@ def initialize_project(
         "outputs": [],
         "assets": {
             "context": "localization-context.md",
+            **localization_brief_assets,
             "glossary": "glossary.csv",
             "translation_memory": "translation-memory.jsonl",
             **TERM_GOVERNANCE_ASSETS,

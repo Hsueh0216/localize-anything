@@ -10,11 +10,16 @@ from typing import Any
 
 from . import PROTOCOL_VERSION, __version__
 from .io_utils import read_json, sha256_file, write_json
+from .localization_brief import LOCALIZATION_BRIEF_JSON, LOCALIZATION_BRIEF_YAML, localization_brief_asset_paths
 from .term_governance import TERM_GOVERNANCE_ASSETS, term_governance_asset_paths
 
 
 CANONICAL_ASSETS = ("localization-context.md", "glossary.csv", "translation-memory.jsonl")
-OPTIONAL_CANONICAL_ASSETS = tuple(TERM_GOVERNANCE_ASSETS.values())
+OPTIONAL_CANONICAL_ASSETS = (
+    LOCALIZATION_BRIEF_JSON,
+    LOCALIZATION_BRIEF_YAML,
+    *TERM_GOVERNANCE_ASSETS.values(),
+)
 
 
 def package_delivery(
@@ -110,6 +115,7 @@ def package_delivery(
             "generation": generation_metadata or _default_generation_metadata(),
             "assets": {
                 "context": "localization-context.md",
+                **localization_brief_asset_paths(state_dir),
                 "glossary": "glossary.csv",
                 "translation_memory": "translation-memory.jsonl",
                 **term_governance_asset_paths(state_dir),

@@ -9,6 +9,9 @@ Define portable artifacts between agents, runtimes, and adapters. The protocol d
 - Project configuration selects operational policy.
 - Project sessions record source-selection policy, routing decisions, resumable
   run state, and links to prior run directories for CLI/Web UI continuation.
+- Localization briefs record the deterministic draft of task intent, source
+  surface, strategy, constraints, and required human confirmations before
+  generation.
 - Adapter manifests declare formats, capabilities, permissions, dependencies, and entrypoints.
 - Segment JSONL carries source units and optional localized targets.
 - Delivery manifests record immutable run facts and scoped status.
