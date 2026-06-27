@@ -24,6 +24,7 @@ from .generation import (
     render_generation_instructions,
     write_handoff_prompts,
 )
+from .generation_strategy import build_generation_strategy, write_generation_strategy
 from .gettext_adapter import extract_segments as extract_po_segments
 from .gettext_adapter import validate_pair as validate_po_pair
 from .io_utils import read_json, read_jsonl, write_json, write_jsonl
@@ -180,15 +181,71 @@ def run_localize(
     plan = create_batch_plan(candidate_segments, source_locale, target_locales, max_segments, operating_mode, reference_policy)
     plan_path = run_dir / "batch-plan.json"
     write_json(plan_path, plan)
+    generation_strategy = write_generation_strategy(
+        state_dir,
+        build_generation_strategy(
+            state_dir,
+            plan,
+            source_locale=source_locale,
+            target_locale=target_locale,
+            run_id=run_id,
+        ),
+    )
 
     packet_dir = run_dir / "work-packets"
     request_dir = run_dir / "draft-requests"
+    generated_batches_dir = (generated_dir or run_dir / "generated-batches").resolve()
+    if not generation_strategy["work_packet_policy"]["allow_generation"]:
+        packet_dir.mkdir(parents=True, exist_ok=True)
+        request_dir.mkdir(parents=True, exist_ok=True)
+        generated_batches_dir.mkdir(parents=True, exist_ok=True)
+        handoff = create_generation_handoff(packet_dir, request_dir, generated_batches_dir, target_locale)
+        handoff_path = run_dir / "generation-handoff.json"
+        write_json(handoff_path, handoff)
+        prompt_dir = run_dir / "prompts"
+        response_dir = run_dir / "responses"
+        response_dir.mkdir(parents=True, exist_ok=True)
+        prompt_manifest = write_handoff_prompts(handoff, prompt_dir)
+        prompt_manifest_path = run_dir / "prompt-manifest.json"
+        write_json(prompt_manifest_path, prompt_manifest)
+        generation_readme_path = run_dir / "generation-README.md"
+        generation_readme_path.write_text(
+            _render_generation_strategy_blocked(generation_strategy),
+            encoding="utf-8",
+            newline="\n",
+        )
+        summary = _summary(
+            run_id,
+            "generation_strategy_blocked",
+            project_root,
+            source_locale,
+            target_locale,
+            selected_files,
+            run_dir,
+            segments_path,
+            plan_path,
+            handoff_path,
+            len(segments),
+            len(plan["batches"]),
+            generation_mode="blocked_by_generation_strategy",
+            reference_plan_path=reference_plan_path,
+            term_preflight=term_preflight,
+            generation_strategy=generation_strategy,
+            operating_mode=operating_mode,
+            reference_policy=reference_policy,
+            reference_summary=reference_plan["summary"],
+            prompt_manifest_path=prompt_manifest_path,
+            generation_readme_path=generation_readme_path,
+            generation_status="blocked",
+            android_overlay_plan=overlay_plan,
+        )
+        return _write_run_summary(summary, run_dir, inspection)
+
     for batch in plan["batches"]:
         packet = build_work_packet(plan, batch["batch_id"], candidate_segments, state_dir, target_locale, limit_tokens, operating_mode=operating_mode, reference_policy=reference_policy)
         write_json(packet_dir / f"{batch['batch_id']}.json", packet)
         write_json(request_dir / f"{batch['batch_id']}.json", create_draft_request(packet))
 
-    generated_batches_dir = (generated_dir or run_dir / "generated-batches").resolve()
     handoff = create_generation_handoff(packet_dir, request_dir, generated_batches_dir, target_locale)
     handoff_path = run_dir / "generation-handoff.json"
     write_json(handoff_path, handoff)
@@ -222,6 +279,7 @@ def run_localize(
             generation_mode="handoff_only",
             reference_plan_path=reference_plan_path,
             term_preflight=term_preflight,
+            generation_strategy=generation_strategy,
             operating_mode=operating_mode,
             reference_policy=reference_policy,
             reference_summary=reference_plan["summary"],
@@ -261,6 +319,7 @@ def run_localize(
             generation_mode=generation_mode,
             reference_plan_path=reference_plan_path,
             term_preflight=term_preflight,
+            generation_strategy=generation_strategy,
             operating_mode=operating_mode,
             reference_policy=reference_policy,
             reference_summary=reference_plan["summary"],
@@ -369,6 +428,7 @@ def run_localize(
         generation_mode=generation_mode,
         reference_plan_path=reference_plan_path,
         term_preflight=term_preflight,
+        generation_strategy=generation_strategy,
         operating_mode=operating_mode,
         reference_policy=reference_policy,
         reference_summary=reference_plan["summary"],
@@ -499,6 +559,31 @@ def _synthetic_segment(segment: dict[str, Any], target_locale: str) -> dict[str,
         "purpose": "test_or_benchmark_only",
     }
     return generated
+
+
+def _render_generation_strategy_blocked(strategy: dict[str, Any]) -> str:
+    blockers = strategy.get("blockers", [])
+    lines = [
+        "# Generation Strategy Gate Blocked",
+        "",
+        "Generation handoff was not created because deterministic strategy checks found blockers.",
+        "",
+        "## Blockers",
+        "",
+    ]
+    if blockers:
+        for blocker in blockers:
+            lines.append(f"- `{blocker.get('code')}`: {blocker.get('message')}")
+    else:
+        lines.append("- `unknown`: strategy status is blocked")
+    lines.extend(
+        [
+            "",
+            "Resolve the blocking review or governance artifact, then rerun `localize-run`.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _write_batches_from_combined(generated: Path, handoff: dict[str, Any]) -> None:
@@ -663,6 +748,7 @@ def _summary(
     warning_count: int = 0,
     reference_plan_path: Path | None = None,
     term_preflight: dict[str, Any] | None = None,
+    generation_strategy: dict[str, Any] | None = None,
     operating_mode: str = DEFAULT_OPERATING_MODE,
     reference_policy: str = DEFAULT_REFERENCE_POLICY_BY_MODE[DEFAULT_OPERATING_MODE],
     reference_summary: dict[str, Any] | None = None,
@@ -712,6 +798,14 @@ def _summary(
             path = state_dir / str(value)
             artifacts[artifact_key] = path.as_posix()
             termbase_artifacts[artifact_key] = path.as_posix()
+    strategy_artifacts: dict[str, str] = {}
+    if generation_strategy:
+        state_dir = project_root / ".localize-anything"
+        for key, value in generation_strategy.get("artifacts", {}).items():
+            artifact_key = str(key)
+            path = state_dir / str(value)
+            artifacts[artifact_key] = path.as_posix()
+            strategy_artifacts[artifact_key] = path.as_posix()
 
     summary = {
         "protocol_version": PROTOCOL_VERSION,
@@ -743,6 +837,12 @@ def _summary(
             "mode": generation_mode,
             "status": generation_status or "pending",
             "provider_agnostic": True,
+            "strategy": {
+                "status": (generation_strategy or {}).get("status", "not_checked"),
+                "generation_readiness": (generation_strategy or {}).get("generation_readiness", "not_checked"),
+                "route": (generation_strategy or {}).get("route", {}),
+                "artifacts": strategy_artifacts,
+            },
             **(generation_metadata or {}),
         },
         "summary": {
@@ -870,6 +970,11 @@ def _routing_evidence(inspection: dict[str, Any], selected_source_files: list[st
 
 
 def _next_actions(status: str) -> list[str]:
+    if status == "generation_strategy_blocked":
+        return [
+            "Resolve Generation Strategy Gate blockers, especially unresolved term governance conflicts.",
+            "Rerun localize-run after the blocking review artifacts are updated.",
+        ]
     if status == "handoff_ready":
         return [
             "Send draft_requests/*.json to an LLM workflow and write one generated JSONL file per batch into generated-batches/.",

@@ -22,6 +22,9 @@
   `termbase-preflight-report.json`, `term-review-queue.json`, and
   `term-review-decisions.jsonl`, with CLI and Workbench API paths for queue
   review decisions.
+- Add a Generation Strategy Gate seed that writes `generation-strategy.json`,
+  routes review-required handoffs, blocks unresolved term conflicts, and
+  propagates strategy state into work packets and draft requests.
 
 ## v0.4.1 - Workbench UI Wiring
 

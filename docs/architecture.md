@@ -36,6 +36,7 @@ Intake
  -> Initial Memory Assets
  -> Termbase Preflight Gate
  -> Batch Plan
+ -> Generation Strategy Gate
  -> Working Context Packet
  -> Localization
  -> Deterministic QA
@@ -74,6 +75,7 @@ candidate-terms.jsonl
 termbase-preflight-report.json
 term-review-queue.json
 term-review-decisions.jsonl
+generation-strategy.json
 delivery-manifest.json
 ```
 
@@ -131,6 +133,28 @@ use the same report to decide whether to block, route for higher assurance, or
 request more user decisions. Until review is complete, run summaries and work
 packets carry `terminology_assurance: incomplete_review_required` or
 `blocked_by_conflict`; generation must not claim full terminology assurance.
+
+## Generation Strategy Gate
+
+Generation strategy runs after deterministic preflight inputs exist and before
+generation handoff. The seed gate writes `generation-strategy.json` from the
+localization brief, termbase preflight report, operating mode, reference policy,
+and batch plan.
+
+The strategy does not translate and does not call providers. It decides whether
+generation is `ready`, `review_required`, or `blocked`, and records the intended
+route:
+
+- `standard_handoff` for deterministic handoff with no blocking review signals;
+- `high_assurance_handoff` when generation may proceed but high-risk review
+  signals remain visible;
+- `blocked` when unresolved governance conflicts would make generation unsafe.
+
+Work packets include a compact `memory.generation_strategy` summary. Draft
+requests repeat blocked or review-required strategy state so host-agent
+workflows cannot silently claim full assurance. The gate consumes Termbase
+Preflight and Term Governance output; it does not replace the UI-first term
+review queue or invent terminology decisions.
 
 ## Localization Brief
 

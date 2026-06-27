@@ -25,6 +25,10 @@ Define portable artifacts between agents, runtimes, and adapters. The protocol d
   `term-review-queue.json`, and `term-review-decisions.jsonl`. The queue is a
   Workbench/API-first review surface; spreadsheet export is optional future
   convenience, not the primary workflow.
+- Generation strategy records the deterministic gate decision before generation
+  handoff in `generation-strategy.json`. It consumes the localization brief,
+  termbase preflight report, operating mode, reference policy, and batch plan to
+  mark generation `ready`, `review_required`, or `blocked`.
 - Delivery decision reports combine QA findings, staged output state, apply
   plans, and unprocessed assets into explicit owner/developer decisions.
 - QA results keep runtime, agent, and human evidence distinct.
@@ -40,6 +44,10 @@ Define portable artifacts between agents, runtimes, and adapters. The protocol d
   preflight report. If unreviewed high-risk terms or conflicts remain, the
   packet must expose incomplete terminology assurance instead of implying full
   term safety.
+- Work packets may include `memory.generation_strategy` from the Generation
+  Strategy Gate. A blocked strategy must prevent generation handoff; a
+  review-required strategy may still produce handoff artifacts, but cannot claim
+  full review or terminology assurance.
 - Draft requests turn a work packet into provider-agnostic host-agent
   instructions and a JSONL segment output contract for translation generation.
 - Draft prompts render those requests as paste-ready Markdown for manual
@@ -65,7 +73,7 @@ Define portable artifacts between agents, runtimes, and adapters. The protocol d
 ## Lifecycle
 
 ```text
-inspect -> preflight -> termbase-preflight -> plan -> retrieve -> draft-request -> draft-prompt
+inspect -> preflight -> termbase-preflight -> plan -> generation-strategy -> retrieve -> draft-request -> draft-prompt
         -> generation-handoff -> localize -> import-generated-response(s)
         -> collect-generated
         -> stage-generated -> validate-output -> package
@@ -107,6 +115,24 @@ forbidden targets update forbidden translations.
 conflicts. Generation-facing artifacts must carry the report's terminology
 assurance state; incomplete review is not equivalent to full terminology
 assurance.
+
+## Generation Strategy Gate
+
+`generation-strategy` writes `generation-strategy.json` after batch planning and
+before working context packets. The gate is deterministic and provider-agnostic.
+It does not generate translations or call external providers.
+
+The seed gate consumes:
+
+- `localization-brief.json` for unresolved human-confirmation requirements;
+- `termbase-preflight-report.json` for terminology assurance, high-risk
+  unreviewed terms, and conflicts;
+- the batch plan scope, operating mode, and reference policy.
+
+It emits `ready`, `review_required`, or `blocked`. `blocked` prevents generation
+handoff when unresolved term conflicts are present. `review_required` keeps the
+handoff path available, but the work packet and draft request must expose that
+the output is review-bound and cannot claim full assurance.
 
 ## Localization Modes
 

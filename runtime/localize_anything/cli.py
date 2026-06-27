@@ -33,6 +33,7 @@ from .generation import (
     validate_generated_segments,
     write_handoff_prompts,
 )
+from .generation_strategy import build_generation_strategy, write_generation_strategy
 from .gettext_adapter import extract_segments as extract_po_segments
 from .gettext_adapter import rebuild as rebuild_po
 from .gettext_adapter import validate_pair as validate_po_pair
@@ -403,6 +404,17 @@ def build_parser() -> argparse.ArgumentParser:
     term_review_decision_parser.add_argument("--forbidden-target", action="append", default=[], dest="forbidden_targets")
     term_review_decision_parser.add_argument("--decided-by", default="cli-user")
     term_review_decision_parser.add_argument("--output", type=Path)
+
+    generation_strategy_parser = subparsers.add_parser(
+        "generation-strategy",
+        help="Create a deterministic Generation Strategy Gate artifact from batch and review state",
+    )
+    generation_strategy_parser.add_argument("plan", type=Path)
+    generation_strategy_parser.add_argument("state_dir", type=Path)
+    generation_strategy_parser.add_argument("--source-locale")
+    generation_strategy_parser.add_argument("--target-locale")
+    generation_strategy_parser.add_argument("--run-id")
+    generation_strategy_parser.add_argument("--output", type=Path)
 
     draft_request_parser = subparsers.add_parser("draft-request", help="Create a provider-agnostic LLM draft request from a work packet")
     draft_request_parser.add_argument("work_packet", type=Path)
@@ -978,6 +990,18 @@ def main(argv: list[str] | None = None) -> int:
                     "forbidden_targets": args.forbidden_targets,
                     "decided_by": args.decided_by,
                 },
+            )
+            return _emit_json(result, args.output)
+        if args.command == "generation-strategy":
+            result = write_generation_strategy(
+                args.state_dir,
+                build_generation_strategy(
+                    args.state_dir,
+                    read_json(args.plan),
+                    source_locale=args.source_locale,
+                    target_locale=args.target_locale,
+                    run_id=args.run_id,
+                ),
             )
             return _emit_json(result, args.output)
         if args.command == "draft-request":
