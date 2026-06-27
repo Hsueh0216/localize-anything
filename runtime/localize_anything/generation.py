@@ -54,6 +54,13 @@ def create_draft_request(work_packet: dict[str, Any]) -> dict[str, Any]:
         instructions.append("Style-only mode: use approved terminology and style guidance only; do not copy existing segment translations.")
     elif reference_policy == "preserve_existing":
         instructions.append("Maintenance mode: translate only segments present in this request; reviewed unchanged translations are preserved outside this generation batch.")
+    generation_strategy = work_packet.get("memory", {}).get("generation_strategy", {})
+    if isinstance(generation_strategy, dict):
+        readiness = str(generation_strategy.get("generation_readiness") or "")
+        if readiness == "blocked":
+            instructions.append("Generation Strategy Gate is blocked; do not treat this request as generation-ready until blockers are resolved.")
+        elif readiness == "review_required":
+            instructions.append("Generation Strategy Gate requires review; drafts may proceed only as review-bound output with no full assurance claim.")
     request_id = hashlib.sha256(
         json.dumps(
             {

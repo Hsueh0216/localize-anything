@@ -49,6 +49,11 @@ from runtime.localize_anything.generation import (
     validate_generated_segments,
     write_handoff_prompts,
 )
+from runtime.localize_anything.generation_strategy import (
+    build_generation_strategy,
+    read_generation_strategy,
+    write_generation_strategy,
+)
 from runtime.localize_anything.gettext_adapter import extract_segments as extract_po_segments
 from runtime.localize_anything.gettext_adapter import parse_po, rebuild as rebuild_po, validate_pair as validate_po_pair
 from runtime.localize_anything.io_utils import read_json, read_jsonl, write_json, write_jsonl
@@ -3211,6 +3216,12 @@ class DeliveryLifecycleTests(unittest.TestCase):
             (project / "voice.ogg").write_bytes(b"audio-placeholder")
             initialized = initialize_project(project, "en-US", ["locales/en-US.json"], ["zh-CN"])
             state = Path(initialized["state_directory"])
+            segments = extract_segments(project / "locales" / "en-US.json", "en-US", "locales/en-US.json")
+            plan = create_batch_plan(segments, "en-US", ["zh-CN"], 10)
+            write_generation_strategy(
+                state,
+                build_generation_strategy(state, plan, source_locale="en-US", target_locale="zh-CN", run_id="test-run-001"),
+            )
 
             staging = root / "staging"
             staged_target = staging / "locales" / "zh-CN.json"
@@ -3257,11 +3268,13 @@ class DeliveryLifecycleTests(unittest.TestCase):
                 "term-decisions.jsonl",
                 "term-conflicts.jsonl",
                 "term-provenance.jsonl",
+                "generation-strategy.json",
                 "qa-report.md",
                 "files/locales/zh-CN.json",
             ):
                 self.assertTrue((delivery / name).exists(), name)
             self.assertEqual(packaged["manifest"]["delivery_status"], "review_ready")
+            self.assertEqual(packaged["manifest"]["assets"]["generation_strategy"], "generation-strategy.json")
             assert_protocol_schema(self, "delivery-manifest", packaged["manifest"])
             self.assertEqual(packaged["manifest"]["unprocessed_non_text_assets"][0]["path"], "voice.ogg")
             self.assertIn("voice.ogg", (delivery / "qa-report.md").read_text(encoding="utf-8"))
@@ -3679,6 +3692,178 @@ class TermbasePreflightTests(unittest.TestCase):
                 thread.join(timeout=2)
 
 
+class GenerationStrategyGateTests(unittest.TestCase):
+    def test_generation_strategy_blocks_conflicted_terms_and_marks_draft_request(self) -> None:
+        segments = [_segment("s1", "API access")]
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / ".localize-anything"
+            state.mkdir()
+            _write_term_registry(
+                state,
+                [
+                    {
+                        "source_term": "API",
+                        "target_term": "接口",
+                        "type": "domain_term",
+                        "status": "approved",
+                        "priority": "user_confirmed",
+                        "target_locale": "zh-CN",
+                    },
+                    {
+                        "source_term": "API",
+                        "target_term": "应用程序接口",
+                        "type": "domain_term",
+                        "status": "locked",
+                        "priority": "user_confirmed",
+                        "target_locale": "zh-CN",
+                    },
+                ],
+            )
+            run_termbase_preflight(state, segments, source_locale="en-US", target_locale="zh-CN", run_id="strategy-001")
+            plan = create_batch_plan(segments, "en-US", ["zh-CN"], 10)
+
+            strategy = write_generation_strategy(
+                state,
+                build_generation_strategy(state, plan, source_locale="en-US", target_locale="zh-CN", run_id="strategy-001"),
+            )
+
+            assert_protocol_schema(self, "generation-strategy", strategy)
+            self.assertEqual(strategy["status"], "blocked")
+            self.assertFalse(strategy["work_packet_policy"]["allow_generation"])
+            self.assertEqual(strategy["route"]["mode"], "blocked")
+            self.assertIn("term_conflict", strategy["work_packet_policy"]["blocked_reason_codes"])
+
+            packet = build_work_packet(plan, "batch-0001", segments, state, "zh-CN")
+            self.assertFalse(packet["memory"]["generation_strategy"]["allow_generation"])
+            draft_request = create_draft_request(packet)
+            self.assertIn("Generation Strategy Gate is blocked", "\n".join(draft_request["instructions"]))
+
+    def test_generation_strategy_review_required_routes_high_assurance_handoff(self) -> None:
+        segments = [_segment("s1", "Delete account", high_risk=True)]
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / ".localize-anything"
+            run_termbase_preflight(state, segments, source_locale="en-US", target_locale="zh-CN", run_id="strategy-002")
+            plan = create_batch_plan(segments, "en-US", ["zh-CN"], 10)
+
+            strategy = write_generation_strategy(
+                state,
+                build_generation_strategy(state, plan, source_locale="en-US", target_locale="zh-CN", run_id="strategy-002"),
+            )
+
+            self.assertEqual(strategy["status"], "review_required")
+            self.assertTrue(strategy["work_packet_policy"]["allow_generation"])
+            self.assertEqual(strategy["route"]["mode"], "high_assurance_handoff")
+            self.assertIn("unreviewed_high_risk_terms", strategy["work_packet_policy"]["warning_codes"])
+
+            packet = build_work_packet(plan, "batch-0001", segments, state, "zh-CN")
+            draft_request = create_draft_request(packet)
+            self.assertIn("Generation Strategy Gate requires review", "\n".join(draft_request["instructions"]))
+
+    def test_workbench_api_reads_generation_strategy(self) -> None:
+        segments = [_segment("s1", "Delete account", high_risk=True)]
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / ".localize-anything"
+            run_termbase_preflight(state, segments, source_locale="en-US", target_locale="zh-CN")
+            plan = create_batch_plan(segments, "en-US", ["zh-CN"], 10)
+            write_generation_strategy(
+                state,
+                build_generation_strategy(state, plan, source_locale="en-US", target_locale="zh-CN"),
+            )
+            self.assertEqual(read_generation_strategy(state)["status"], "review_required")
+            server = create_ui_server(port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            host, port = server.server_address[:2]
+            try:
+                status, payload = _http_post_json(
+                    host,
+                    port,
+                    "/api/generation-strategy",
+                    {"state_dir": state.as_posix()},
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["generation_strategy"]["status"], "review_required")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_cli_generation_strategy_writes_artifact(self) -> None:
+        segments = [_segment("s1", "Delete account", high_risk=True)]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / ".localize-anything"
+            run_termbase_preflight(state, segments, source_locale="en-US", target_locale="zh-CN")
+            plan = create_batch_plan(segments, "en-US", ["zh-CN"], 10)
+            plan_path = root / "batch-plan.json"
+            output = root / "strategy-output.json"
+            write_json(plan_path, plan)
+
+            exit_code = cli_main(
+                [
+                    "generation-strategy",
+                    plan_path.as_posix(),
+                    state.as_posix(),
+                    "--target-locale",
+                    "zh-CN",
+                    "--output",
+                    output.as_posix(),
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(read_json(output)["status"], "review_required")
+            self.assertEqual(read_json(state / "generation-strategy.json")["status"], "review_required")
+
+    def test_localize_run_blocks_handoff_on_generation_strategy_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            locale_dir = project / "locales"
+            locale_dir.mkdir(parents=True)
+            (locale_dir / "en-US.json").write_text(json.dumps({"api": "API access"}), encoding="utf-8")
+            state = project / ".localize-anything"
+            _write_term_registry(
+                state,
+                [
+                    {
+                        "source_term": "API",
+                        "target_term": "接口",
+                        "type": "domain_term",
+                        "status": "approved",
+                        "priority": "user_confirmed",
+                        "target_locale": "zh-CN",
+                    },
+                    {
+                        "source_term": "API",
+                        "target_term": "应用程序接口",
+                        "type": "domain_term",
+                        "status": "locked",
+                        "priority": "user_confirmed",
+                        "target_locale": "zh-CN",
+                    },
+                ],
+            )
+
+            result = run_localize(
+                project,
+                "en-US",
+                ["zh-CN"],
+                source_files=["locales/en-US.json"],
+                output_root=root / "runs",
+                run_id="blocked-strategy-001",
+                handoff_only=True,
+            )
+
+            self.assertEqual(result["status"], "generation_strategy_blocked")
+            self.assertEqual(result["generation"]["status"], "blocked")
+            self.assertEqual(result["generation"]["strategy"]["status"], "blocked")
+            self.assertEqual(result["generation"]["strategy"]["route"]["mode"], "blocked")
+            self.assertTrue((state / "generation-strategy.json").is_file())
+            self.assertEqual(read_json(Path(result["artifacts"]["generation_handoff"]))["request_count"], 0)
+            self.assertEqual(list(Path(result["artifacts"]["work_packets"]).glob("*.json")), [])
+
+
 def _termbase_segments() -> list[dict[str, Any]]:
     return [
         _segment("s1", "Delete account", resource_name="delete_account_button", high_risk=True),
@@ -3857,7 +4042,7 @@ class ProtocolFilesTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         result = validate_protocol_tree(root / "protocol")
         self.assertEqual(result["status"], "pass", result["errors"])
-        self.assertEqual(result["schemas_checked"], 25)
+        self.assertEqual(result["schemas_checked"], 26)
 
 
 class V021ModeSystemBenchmarkTests(unittest.TestCase):

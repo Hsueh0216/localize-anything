@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from . import PROTOCOL_VERSION, __version__
+from .generation_strategy import GENERATION_STRATEGY_JSON, generation_strategy_asset_paths
 from .io_utils import read_json, sha256_file, write_json
 from .localization_brief import LOCALIZATION_BRIEF_JSON, LOCALIZATION_BRIEF_YAML, localization_brief_asset_paths
 from .term_governance import TERM_GOVERNANCE_ASSETS, term_governance_asset_paths
@@ -30,6 +31,7 @@ OPTIONAL_CANONICAL_ASSETS = (
     TERMBASE_PREFLIGHT_REPORT_JSON,
     TERM_REVIEW_QUEUE_JSON,
     TERM_REVIEW_DECISIONS_JSONL,
+    GENERATION_STRATEGY_JSON,
 )
 
 
@@ -131,6 +133,7 @@ def package_delivery(
                 "translation_memory": "translation-memory.jsonl",
                 **term_governance_asset_paths(state_dir),
                 **termbase_preflight_asset_paths(state_dir),
+                **generation_strategy_asset_paths(state_dir),
                 "qa_report": "qa-report.md",
             },
             "qa": {
